@@ -14,7 +14,7 @@ use ksni::{
     Category, MenuItem, Status, ToolTip,
 };
 
-use crate::Msg;
+use crate::app::Msg;
 
 pub enum TrayMsg {
     Show,

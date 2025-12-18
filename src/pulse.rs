@@ -13,6 +13,7 @@ use libpulse_binding::{
 const VIRTUALMIC_DESCRIPTION: &str = "Global Push-to-Talk Virtual Microphone";
 const VIRTUALMIC_NAME: &str = "GlobalPushToTalkVirtualMicrophone";
 
+#[derive(Clone)]
 pub struct PulseAudioState {
     mainloop: Rc<RefCell<Mainloop>>,
     context: Rc<RefCell<Context>>,
@@ -21,7 +22,6 @@ pub struct PulseAudioState {
 
 impl PulseAudioState {
     pub fn init() -> Result<Self, Error> {
-        // initialise pulseaudio
         let mut proplist = Proplist::new().unwrap();
         proplist
             .set_str(properties::APPLICATION_NAME, "GlobalPushToTalk")
@@ -68,10 +68,7 @@ impl PulseAudioState {
         })
     }
 
-    pub fn set_virtual_mic(&mut self, source_name: &str) {
-        // pactl load-module module-remap-source master=<mic name> source_name=<VIRTUALMIC_NAME> source_properties=device.description=<VIRTUALMIC_DESCRIPTION>
-
-        // delete if already exists
+    pub fn remove_virtual_mic(&mut self) {
         let mut inner_introspect = self.context.borrow().introspect();
 
         let delete_op = self
@@ -110,6 +107,12 @@ impl PulseAudioState {
                 break;
             }
         }
+    }
+
+    pub fn set_virtual_mic(&mut self, source_name: &str) {
+        // pactl load-module module-remap-source master=<mic name> source_name=<VIRTUALMIC_NAME> source_properties=device.description=<VIRTUALMIC_DESCRIPTION>
+
+        self.remove_virtual_mic();
 
         let options = format!("master={source_name} source_name={VIRTUALMIC_NAME} source_properties=\"device.description='{VIRTUALMIC_DESCRIPTION}'\"");
 
@@ -155,7 +158,6 @@ impl PulseAudioState {
                 _ => {}
             }
             if op.get_state() != operation::State::Running {
-                println!("Set mute: {mute}");
                 return Ok(());
             }
         }
