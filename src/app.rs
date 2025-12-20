@@ -1,27 +1,35 @@
-use std::process::exit;
+use std::{
+    fs::{File, OpenOptions},
+    io::{Read, Write},
+    process::exit,
+    sync::Arc,
+};
 
 use ashpd::zbus::block_on;
+use fs4::fs_std::FileExt;
 use global_hotkey::{
     hotkey::{Code, HotKey},
     wayland::{using_wayland, WlHotKeysChangedEvent, WlNewHotKeyAction},
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
 };
 use iced::{
-    alignment::Vertical,
-    font::Weight,
+    alignment::{Horizontal, Vertical},
+    font::{Style, Weight},
     futures::{FutureExt, SinkExt, Stream, StreamExt},
     stream,
-    widget::{checkbox, column, pick_list, row, rule, text},
+    widget::{button, checkbox, column, pick_list, row, rule, space, text},
     window::{close_requests, Id, Settings},
-    Element, Font, Subscription, Task, Theme,
+    Element, Font, Length, Subscription, Task, Theme,
 };
 use ksni::{Handle, TrayMethods};
+use nix::{sys::signal::Signal, unistd::Pid};
+use signal_hook_tokio::Signals;
 
-use crate::{pulse::PulseAudioState, tray::Tray, Error, APP_ID, PADDING, SPACING, WL_HOTKEY_ID};
+use crate::{pulse::PulseAudioState, tray::Tray, APP_ID, PADDING, SPACING, WL_HOTKEY_ID};
 
 #[derive(Debug, Clone)]
 pub enum Msg {
-    GlobalShortcutsFail(String),
+    GlobalShortcutsFail,
     ChooseMicrophone(String),
     SetActive(bool),
     ToggleActive,
@@ -34,26 +42,81 @@ pub enum Msg {
 }
 
 #[derive(Clone)]
+struct Backend {
+    pa_state: PulseAudioState,
+    tray: Handle<Tray>,
+}
+
+#[derive(Clone)]
+enum BackendState {
+    Loaded(Backend),
+    Error(String),
+}
+
+#[derive(Clone)]
 pub struct App {
     active: bool,
     muted: bool,
     hotkey_description: String,
-    pa_state: PulseAudioState,
-    tray: Handle<Tray>,
-    window_id: Id,
+    backend: BackendState,
     theme: Option<Theme>,
-    fatal_error: Option<String>,
+    _flock: Option<Arc<File>>,
 }
 
 impl App {
-    pub fn new() -> Result<(Self, Task<Msg>), Error> {
-        // TODO: remove expect statements later
-        let pa_state = PulseAudioState::init()?;
-        let (tray_builder, stream) = Tray::new();
-        let tray = block_on(tray_builder.spawn())?;
+    pub fn new() -> (Self, Task<Msg>) {
+        // there must only be one running instance of this application
+        let lock_path = format!("/tmp/{APP_ID}.{}.lock", nix::unistd::Uid::current());
+        let flock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .and_then(|mut file| {
+                if !matches!(file.try_lock_exclusive(), Ok(true)) {
+                    // there is another running instance
+                    eprintln!("There is another running instance!");
 
-        let (window_id, window_open_task) = iced::window::open(Settings {
+                    let mut content = String::new();
+                    let _ = file.read_to_string(&mut content);
+                    println!("PID: {}", content);
+
+                    if let Ok(pid) = content.parse::<i32>() {
+                        if nix::sys::signal::kill(Pid::from_raw(pid), Some(Signal::SIGUSR1)).is_ok()
+                        {
+                            exit(0);
+                        }
+                    }
+
+                    // open a new instance, if in doubt
+                    Ok(Arc::new(file))
+                } else {
+                    // write PID into it
+                    let pid = nix::unistd::getpid();
+                    let _ = file.write(pid.to_string().as_bytes());
+
+                    Ok(Arc::new(file))
+                }
+            })
+            .ok();
+
+        let pa_state = PulseAudioState::init();
+        let (tray_builder, stream) = Tray::new();
+        let tray = block_on(tray_builder.spawn());
+
+        let backend = match (pa_state, tray) {
+            (Ok(pa_state), Ok(tray)) => BackendState::Loaded(Backend { pa_state, tray }),
+            (Err(e), _) => BackendState::Error(e.to_string()),
+            (_, Err(e)) => BackendState::Error(e.to_string()),
+        };
+
+        let (_, window_open_task) = iced::window::open(Settings {
             exit_on_close_request: false,
+            size: match backend {
+                BackendState::Loaded(_) => (600, 300),
+                BackendState::Error(_) => (280, 180),
+            }
+            .into(),
             ..Default::default()
         });
 
@@ -61,11 +124,15 @@ impl App {
             muted: false,
             active: false,
             hotkey_description: "".into(),
-            pa_state,
-            tray,
-            window_id,
             theme: None,
-            fatal_error: None,
+            backend,
+            _flock: flock,
+        };
+
+        // handling signals
+        let signal_handler = match Signals::new([signal_hook::consts::SIGUSR1]) {
+            Ok(signals) => Task::stream(signals).map(|_| Msg::ShowWindow),
+            Err(_) => Task::none(),
         };
 
         let tasks = Task::batch([
@@ -80,38 +147,67 @@ impl App {
                     })
                 }),
             ),
+            signal_handler,
         ]);
-        Ok((this, tasks))
+        (this, tasks)
     }
 
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
-            Msg::ChooseMicrophone(mic) => self.pa_state.set_virtual_mic(&mic),
+            Msg::ChooseMicrophone(mic) => {
+                if let BackendState::Loaded(b) = &mut self.backend {
+                    b.pa_state.set_virtual_mic(&mic);
+                }
+            }
             Msg::SetActive(a) => {
-                self.active = a;
-                block_on(self.tray.update(|tray| tray.set_ptt_enabled(a)));
-                return Task::done(Msg::SetMuted(a));
+                if let BackendState::Loaded(b) = &mut self.backend {
+                    self.active = a;
+                    block_on(b.tray.update(|tray| tray.set_ptt_enabled(a)));
+                    return Task::done(Msg::SetMuted(a));
+                }
             }
             Msg::ToggleActive => {
                 return Task::done(Msg::SetActive(!self.active));
             }
             Msg::SetMuted(m) => {
-                let res = self.pa_state.set_mute(self.active && m);
-                if let Err(e) = res {
-                    eprintln!("Failed to set mute: {}", e);
+                if let BackendState::Loaded(b) = &mut self.backend {
+                    let res = b.pa_state.set_mute(self.active && m);
+                    if let Err(e) = res {
+                        eprintln!("Failed to set mute: {}", e);
+                    }
+                    self.muted = self.active && m;
                 }
-                self.muted = self.active && m;
             }
-            Msg::GlobalShortcutsFail(_) => return iced::exit(),
+            Msg::GlobalShortcutsFail => self.backend = BackendState::Error("Failed to load global shortcuts. Push-to-talk will not work. Make sure you are using a Wayland compositor with a portal implementation that supports global shortcuts.".into()),
             Msg::SetHotKeyDescription(desc) => self.hotkey_description = desc,
             Msg::ShowWindow => {
-                return iced::window::open(Settings::default()).1.discard();
+                let size = match self.backend {
+                                BackendState::Loaded(_) => (680, 420),
+                                BackendState::Error(_) => (280, 180),
+                            };
+
+                let task = iced::window::latest().then(move |res| {
+                    if res.is_some() {
+                        Task::none()
+                    } else {
+                        iced::window::open(Settings {
+                                size: size.into(),
+                                ..Default::default()
+                            })
+                            .1
+                            .discard()
+                    }
+                });
+
+                return task;
             }
             Msg::Close => {
-                return iced::window::latest().and_then(|w| iced::window::close(w));
+                return iced::window::latest().and_then(iced::window::close);
             }
             Msg::Exit => {
-                self.pa_state.remove_virtual_mic();
+                if let BackendState::Loaded(b) = &mut self.backend {
+                    b.pa_state.remove_virtual_mic();
+                }
                 exit(0);
             }
             Msg::SetTheme(theme) => self.theme = theme,
@@ -132,14 +228,19 @@ impl App {
     }
 
     pub fn view(&self, _window: Id) -> Element<'_, Msg> {
+        let backend = match &self.backend {
+            BackendState::Loaded(backend) => backend,
+            BackendState::Error(e) => return Self::show_error(e.to_string()),
+        };
+
         let title = title("Global Push-to-Talk");
-        let spacer = rule::horizontal(1.0);
+        let sep = rule::horizontal(1.0);
 
         column![
             title,
-            spacer,
-            self.toggle_active(),
-            self.select_mic(),
+            sep,
+            self.toggle_active(backend),
+            self.select_mic(backend),
             self.mute_indicator(),
             self.hotkey_indicator()
         ]
@@ -148,18 +249,41 @@ impl App {
         .into()
     }
 
-    fn toggle_active(&self) -> Element<'_, Msg> {
-        if self.pa_state.get_active_source().is_none() {
-            return row![text("Select a microphone to enable push-to-talk")]
-                .spacing(SPACING)
-                .padding(PADDING)
-                .align_y(Vertical::Center)
-                .into();
+    fn show_error<'a>(message: String) -> Element<'a, Msg> {
+        let title = title("Error");
+        let sep = rule::horizontal(1.0);
+        let message = text(message).wrapping(text::Wrapping::Word);
+
+        let close_btn = button("Close").on_press(Msg::Exit);
+        let close_btn = column![close_btn]
+            .align_x(Horizontal::Right)
+            .width(Length::Fill);
+
+        column![title, sep, message, space().height(Length::Fill), close_btn]
+            .spacing(SPACING)
+            .padding(PADDING)
+            .height(Length::Fill)
+            .width(Length::Fill)
+            .into()
+    }
+
+    fn toggle_active(&self, backend: &Backend) -> Element<'_, Msg> {
+        if backend.pa_state.get_active_source().is_none() {
+            return row![
+                text("Select a microphone to enable push-to-talk").font(Font {
+                    style: Style::Italic,
+                    ..Default::default()
+                })
+            ]
+            .spacing(SPACING)
+            .padding(PADDING)
+            .align_y(Vertical::Center)
+            .into();
         }
 
         let text = text("Enable");
         let checkbox = checkbox(self.active)
-            .on_toggle_maybe(self.pa_state.get_active_source().map(|_| Msg::SetActive));
+            .on_toggle_maybe(backend.pa_state.get_active_source().map(|_| Msg::SetActive));
 
         row![text, checkbox]
             .spacing(SPACING)
@@ -169,18 +293,24 @@ impl App {
     }
 
     fn mute_indicator(&self) -> Element<'_, Msg> {
-        text(if self.muted { "Muted" } else { "Not Muted" }).into()
+        text(if self.muted { "Muted" } else { "Not Muted" })
+            .color(if self.muted {
+                [1.0, 0.0, 0.0]
+            } else {
+                [0.0, 1.0, 0.0]
+            })
+            .into()
     }
 
     fn hotkey_indicator(&self) -> Element<'_, Msg> {
         text(format!("Hotkey: {}", self.hotkey_description)).into()
     }
 
-    fn select_mic(&self) -> Element<'_, Msg> {
+    fn select_mic(&self, backend: &Backend) -> Element<'_, Msg> {
         let label = text("Microphone");
         let pick_list = pick_list(
-            self.pa_state.get_input_devices(),
-            self.pa_state.get_active_source().map(|s| s.to_string()),
+            backend.pa_state.get_input_devices(),
+            backend.pa_state.get_active_source().map(|s| s.to_string()),
             Msg::ChooseMicrophone,
         )
         .placeholder("Choose Microphone...");
@@ -222,25 +352,25 @@ fn global_shortcuts_wl_change() -> impl Stream<Item = Msg> {
 
 fn global_shortcuts() -> impl Stream<Item = Msg> {
     stream::channel(100, async |mut tx| {
-        let gh = match GlobalHotKeyManager::new() {
-            Ok(g) => g,
-            Err(e) => {
-                let _ = tx.send(Msg::GlobalShortcutsFail(e.to_string())).await;
-                return;
-            }
+        let Ok(gh) = GlobalHotKeyManager::new() else {
+            let _ = tx.send(Msg::GlobalShortcutsFail).await;
+            return;
         };
 
         let default_hotkey = HotKey::new(None, Code::Insert);
         let hk_id = if using_wayland() {
-            if let Err(e) = gh.wl_register_all(
-                APP_ID,
-                &[WlNewHotKeyAction::new(
-                    WL_HOTKEY_ID,
-                    "Activate push-to-talk",
-                    Some(default_hotkey),
-                )],
-            ) {
-                let _ = tx.send(Msg::GlobalShortcutsFail(e.to_string())).await;
+            if gh
+                .wl_register_all(
+                    APP_ID,
+                    &[WlNewHotKeyAction::new(
+                        WL_HOTKEY_ID,
+                        "Activate push-to-talk",
+                        Some(default_hotkey),
+                    )],
+                )
+                .is_err()
+            {
+                let _ = tx.send(Msg::GlobalShortcutsFail).await;
                 return;
             }
 

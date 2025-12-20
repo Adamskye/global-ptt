@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use iced::{
     futures::{
-        channel::mpsc::{channel, Receiver, Sender},
+        channel::mpsc::{channel, Sender},
         executor::block_on,
         lock::Mutex,
         FutureExt, SinkExt, Stream, StreamExt,
@@ -15,11 +15,6 @@ use ksni::{
 };
 
 use crate::app::Msg;
-
-pub enum TrayMsg {
-    Show,
-    TogglePTT,
-}
 
 #[derive(Debug)]
 pub struct Tray {

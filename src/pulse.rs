@@ -1,6 +1,5 @@
 use std::{cell::RefCell, ops::Deref, rc::Rc, sync::mpsc};
 
-use iced::{futures::Stream, stream};
 use libpulse_binding::{
     callbacks::ListResult,
     context::{Context, FlagSet, State},
@@ -139,7 +138,7 @@ impl PulseAudioState {
     }
 
     pub fn get_active_source(&self) -> Option<&str> {
-        self.src_name.as_ref().map(|s| s.as_str())
+        self.src_name.as_deref()
     }
 
     pub fn set_mute(&mut self, mute: bool) -> Result<(), Error> {
@@ -171,19 +170,16 @@ impl PulseAudioState {
             .borrow()
             .introspect()
             .get_source_info_list(move |item| {
-                if let ListResult::Item(i) = item {
-                    if let Some(name) = &i.name {
-                        if name != VIRTUALMIC_NAME {
-                            let _ = tx.send(name.to_string());
-                        }
+                if let ListResult::Item(i) = item 
+                    && let Some(name) = &i.name && name != VIRTUALMIC_NAME {
+                        let _ = tx.send(name.to_string());
                     }
-                }
             });
 
         loop {
             match self.mainloop.borrow_mut().iterate(false) {
                 IterateResult::Success(_) => {}
-                IterateResult::Quit(_) | IterateResult::Err(_) => return vec.into(),
+                IterateResult::Quit(_) | IterateResult::Err(_) => return vec,
             }
 
             if op.get_state() != operation::State::Running {
@@ -195,7 +191,7 @@ impl PulseAudioState {
             vec.push(s);
         }
 
-        vec.into()
+        vec
     }
 }
 
