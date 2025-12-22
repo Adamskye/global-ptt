@@ -44,7 +44,7 @@ pub enum Msg {
 #[derive(Clone)]
 struct Backend {
     pa_state: PulseAudioState,
-    tray: Handle<Tray>,
+    tray: Option<Handle<Tray>>,
 }
 
 #[derive(Clone)]
@@ -104,10 +104,9 @@ impl App {
         let (tray_builder, stream) = Tray::new();
         let tray = block_on(tray_builder.spawn());
 
-        let backend = match (pa_state, tray) {
-            (Ok(pa_state), Ok(tray)) => BackendState::Loaded(Backend { pa_state, tray }),
+        let backend = match (pa_state, tray.ok()) {
+            (Ok(pa_state), tray) => BackendState::Loaded(Backend { pa_state, tray }),
             (Err(e), _) => BackendState::Error(e.to_string()),
-            (_, Err(e)) => BackendState::Error(e.to_string()),
         };
 
         let (_, window_open_task) = iced::window::open(Settings {
@@ -162,7 +161,10 @@ impl App {
             Msg::SetActive(a) => {
                 if let BackendState::Loaded(b) = &mut self.backend {
                     self.active = a;
-                    block_on(b.tray.update(|tray| tray.set_ptt_enabled(a)));
+                    
+                    if let Some(tray) = &b.tray {
+                        block_on(tray.update(|tray| tray.set_ptt_enabled(a)));
+                    }
                     return Task::done(Msg::SetMuted(a));
                 }
             }
