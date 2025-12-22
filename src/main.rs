@@ -1,7 +1,6 @@
 mod app;
 mod pulse;
 mod tray;
-mod signal;
 
 use crate::app::App;
 
