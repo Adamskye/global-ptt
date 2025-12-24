@@ -6,7 +6,7 @@ use libpulse_binding::{
     error::PAErr,
     mainloop::standard::{IterateResult, Mainloop},
     operation,
-    proplist::{properties, Proplist},
+    proplist::{Proplist, properties},
 };
 
 const VIRTUALMIC_DESCRIPTION: &str = "Global Push-to-Talk Virtual Microphone";
@@ -113,7 +113,9 @@ impl PulseAudioState {
 
         self.remove_virtual_mic();
 
-        let options = format!("master={source_name} source_name={VIRTUALMIC_NAME} source_properties=\"device.description='{VIRTUALMIC_DESCRIPTION}'\"");
+        let options = format!(
+            "master={source_name} source_name={VIRTUALMIC_NAME} source_properties=\"device.description='{VIRTUALMIC_DESCRIPTION}'\""
+        );
 
         let create_op =
             self.context
@@ -170,10 +172,12 @@ impl PulseAudioState {
             .borrow()
             .introspect()
             .get_source_info_list(move |item| {
-                if let ListResult::Item(i) = item 
-                    && let Some(name) = &i.name && name != VIRTUALMIC_NAME {
-                        let _ = tx.send(name.to_string());
-                    }
+                if let ListResult::Item(i) = item
+                    && let Some(name) = &i.name
+                    && name != VIRTUALMIC_NAME
+                {
+                    let _ = tx.send(name.to_string());
+                }
             });
 
         loop {

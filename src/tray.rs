@@ -2,16 +2,16 @@ use std::sync::Arc;
 
 use iced::{
     futures::{
-        channel::mpsc::{channel, Sender},
+        FutureExt, SinkExt, Stream, StreamExt,
+        channel::mpsc::{Sender, channel},
         executor::block_on,
         lock::Mutex,
-        FutureExt, SinkExt, Stream, StreamExt,
     },
     stream,
 };
 use ksni::{
-    menu::{CheckmarkItem, StandardItem},
     Category, MenuItem, Status, ToolTip,
+    menu::{CheckmarkItem, StandardItem},
 };
 
 use crate::app::Msg;

@@ -13,10 +13,12 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Result<Self, ConfyError> {
-        confy::load(APP_NAME, Some("config"))
+        let config: Self = confy::load(APP_NAME, Some("config"))?;
+        config.save();
+        Ok(config)
     }
 
-    pub fn save(&self) {
+    fn save(&self) {
         let _ = confy::store(APP_NAME, Some("config"), self);
     }
 
@@ -25,5 +27,10 @@ impl Config {
             .as_deref()
             .and_then(|hk| HotKey::from_str(hk).ok())
             .unwrap_or(HotKey::new(None, Code::Insert))
+    }
+
+    pub fn set_hotkey(&mut self, hotkey: HotKey) {
+        self.hotkey = Some(hotkey.into_string());
+        self.save();
     }
 }

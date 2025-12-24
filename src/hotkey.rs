@@ -1,14 +1,17 @@
+use std::sync::Arc;
+
 use global_hotkey::{
-    hotkey::{Code, HotKey},
-    wayland::{using_wayland, WlHotKeysChangedEvent, WlNewHotKeyAction},
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
+    hotkey::{Code, HotKey},
+    wayland::{WlHotKeysChangedEvent, WlNewHotKeyAction, using_wayland},
 };
 use iced::{
     futures::{FutureExt, SinkExt, Stream},
     stream,
 };
+use tokio::sync::{Mutex, mpsc};
 
-use crate::{app::Msg, config::Config, APP_ID, WL_HOTKEY_ID};
+use crate::{APP_ID, WL_HOTKEY_ID, app::Msg, config::Config};
 
 pub fn hotkeys_wl_change() -> impl Stream<Item = Msg> {
     // receiving keypress changes under Wayland
@@ -45,7 +48,7 @@ pub fn hotkeys() -> impl Stream<Item = Msg> {
         };
 
         let default_hotkey = HotKey::new(None, Code::Insert);
-        let hk_id = if using_wayland() {
+        if using_wayland() {
             if gh
                 .wl_register_all(
                     APP_ID,
@@ -73,28 +76,56 @@ pub fn hotkeys() -> impl Stream<Item = Msg> {
                     .await;
             }
 
-            WL_HOTKEY_ID
+            let hk_event_rx = GlobalHotKeyEvent::receiver();
+            while let Ok(Ok(msg)) = tokio::task::spawn_blocking(|| hk_event_rx.recv()).await {
+                if msg.id() != WL_HOTKEY_ID {
+                    continue;
+                }
+
+                let _ = tx
+                    .send(Msg::SetMuted(msg.state() == HotKeyState::Released))
+                    .now_or_never();
+            }
         } else {
             // if not using Wayland
-            let config = Config::load().unwrap_or_default();
-            let hk = config.get_hotkey();
+            let (hk_change_tx, mut hk_change_rx) = mpsc::channel::<HotKey>(100);
+            let _ = tx.send(Msg::InitChangeHotKeySender(hk_change_tx)).await;
 
-            let _ = gh.register(hk);
-            let _ = tx.send(Msg::SetHotKeyDescription(hk.into_string())).await;
+            let mut config = Config::load().unwrap_or_default();
+            let hk = Arc::new(Mutex::new(config.get_hotkey()));
 
-            config.save();
-            hk.id()
-        };
-
-        let receiver = GlobalHotKeyEvent::receiver();
-        while let Ok(Ok(msg)) = tokio::task::spawn_blocking(|| receiver.recv()).await {
-            if msg.id() != hk_id {
-                continue;
-            }
-
+            let _ = gh.register(*hk.lock().await);
             let _ = tx
-                .send(Msg::SetMuted(msg.state() == HotKeyState::Released))
-                .now_or_never();
-        }
+                .send(Msg::SetHotKeyDescription(hk.lock().await.into_string()))
+                .await;
+
+            let hk_event_rx = GlobalHotKeyEvent::receiver();
+
+            // handling hotkey changes
+            let current_hk = hk.clone();
+            let mut hk_event_tx = tx.clone();
+            tokio::spawn(async move {
+                while let Some(new_hk) = hk_change_rx.recv().await {
+                    let mut current_hk = *current_hk.lock().await;
+                    let _ = gh.unregister(current_hk);
+                    config.set_hotkey(new_hk);
+                    current_hk = new_hk;
+                    let _ = hk_event_tx
+                        .send(Msg::SetHotKeyDescription(current_hk.into_string()))
+                        .await;
+                }
+            });
+
+            // polling for hotkey events
+            while let Ok(Ok(msg)) = tokio::task::spawn_blocking(|| hk_event_rx.recv()).await {
+                if msg.id() != hk.lock().await.id() {
+                    continue;
+                }
+
+                let _ = tx
+                    .send(Msg::SetMuted(msg.state() == HotKeyState::Released))
+                    .now_or_never();
+            }
+        };
     })
 }
