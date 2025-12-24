@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.100"
 ashpd = "0.12.0"
+confy = "2.0.0"
 fd-lock = "4.0.4"
 fs4 = "0.13.1"
 global-hotkey = { git = "https://github.com/Adamskye/global-hotkey.git", version = "0.7.0", branch = "wayland_support" }
@@ -14,6 +15,7 @@ ksni = "0.3.2"
 libpulse-binding = "2.30.1"
 mundy = "0.2.2"
 nix = { version = "0.30.1", features = ["process", "signal"] }
+serde = { version = "1.0.228", features = ["derive"] }
 signal-hook = "0.3.18"
 signal-hook-tokio = { version = "0.3.1", features = ["futures-v0_3"] }
 thiserror = "2.0.17"
