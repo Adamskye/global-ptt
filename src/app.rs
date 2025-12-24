@@ -76,14 +76,13 @@ impl App {
             .create(true)
             .truncate(true)
             .open(&lock_path)
-            .and_then(|mut file| {
+            .map(|mut file| {
                 if !matches!(file.try_lock_exclusive(), Ok(true)) {
                     // there is another running instance
                     eprintln!("There is another running instance!");
 
                     let mut content = String::new();
                     let _ = file.read_to_string(&mut content);
-                    println!("PID: {}", content);
 
                     if let Ok(pid) = content.parse::<i32>()
                         && nix::sys::signal::kill(Pid::from_raw(pid), Some(Signal::SIGUSR1)).is_ok()
@@ -92,13 +91,13 @@ impl App {
                     }
 
                     // open a new instance, if in doubt
-                    Ok(Arc::new(file))
+                    Arc::new(file)
                 } else {
                     // write PID into it
                     let pid = nix::unistd::getpid();
                     let _ = file.write(pid.to_string().as_bytes());
 
-                    Ok(Arc::new(file))
+                    Arc::new(file)
                 }
             })
             .ok();
@@ -221,9 +220,8 @@ impl App {
             },
             Msg::StopHotKeyRecording(hk_string) => {
                 self.recording_hotkey = false;
-                match (self.change_hotkey_tx.clone(), HotKey::from_str(&hk_string)) {
-                    (Some(tx), Ok(hk)) => return Task::future(async move { tx.send(hk).await }).discard(),
-                    _ => {},
+                if let (Some(tx), Ok(hk)) = (self.change_hotkey_tx.clone(), HotKey::from_str(&hk_string)) {
+                    return Task::future(async move { tx.send(hk).await }).discard();
                 }
             }
             Msg::None => {},

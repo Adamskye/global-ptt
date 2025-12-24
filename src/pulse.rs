@@ -21,10 +21,9 @@ pub struct PulseAudioState {
 
 impl PulseAudioState {
     pub fn init() -> Result<Self, Error> {
-        let mut proplist = Proplist::new().unwrap();
+        let mut proplist = Proplist::new().ok_or(Error::Other)?;
         proplist
-            .set_str(properties::APPLICATION_NAME, "GlobalPushToTalk")
-            .unwrap();
+            .set_str(properties::APPLICATION_NAME, "GlobalPushToTalk").map_err(|_| Error::Other)?;
 
         let mainloop = Rc::new(RefCell::new(
             Mainloop::new().ok_or(Error::MainloopCreation)?,
@@ -109,8 +108,6 @@ impl PulseAudioState {
     }
 
     pub fn set_virtual_mic(&mut self, source_name: &str) {
-        // pactl load-module module-remap-source master=<mic name> source_name=<VIRTUALMIC_NAME> source_properties=device.description=<VIRTUALMIC_DESCRIPTION>
-
         self.remove_virtual_mic();
 
         let options = format!(
@@ -218,4 +215,6 @@ pub enum Error {
     ContextConnection(#[from] PAErr),
     #[error("failed to tick mainloop")]
     MainloopTick,
+    #[error("other error")]
+    Other,
 }
