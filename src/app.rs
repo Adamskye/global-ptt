@@ -224,6 +224,7 @@ impl App {
                             (Some(tx), Ok(hk)) => return Task::future(async move { tx.send(hk).await }).discard(),
                             _ => {},
                         }
+                        self.recording_hotkey = false;
                     }
             Msg::None => {},
         };
