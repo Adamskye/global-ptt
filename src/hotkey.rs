@@ -13,33 +13,6 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::{app::Msg, config::Config, APP_ID, WL_HOTKEY_ID};
 
-pub fn hotkeys_wl_change() -> impl Stream<Item = Msg> {
-    // receiving keypress changes under Wayland
-    stream::channel(100, async |mut tx| {
-        // TODO: make this cleaner
-        loop {
-            let Some(rec) = WlHotKeysChangedEvent::receiver() else {
-                return;
-            };
-
-            match tokio::task::spawn_blocking(move || rec.recv()).await {
-                Ok(Ok(ev)) => {
-                    for change in ev.changed_hotkeys {
-                        if change.id != WL_HOTKEY_ID {
-                            continue;
-                        }
-                        let _ = tx
-                            .send(Msg::SetHotKeyDescription(change.hotkey_description))
-                            .await;
-                        break;
-                    }
-                }
-                _ => return,
-            }
-        }
-    })
-}
-
 pub fn hotkeys() -> impl Stream<Item = Msg> {
     stream::channel(100, async |mut tx| {
         let Ok(gh) = GlobalHotKeyManager::new() else {
@@ -75,6 +48,30 @@ pub fn hotkeys() -> impl Stream<Item = Msg> {
                     ))
                     .await;
             }
+
+            let mut hk_change_tx = tx.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Some(rec) = WlHotKeysChangedEvent::receiver() else {
+                        return;
+                    };
+
+                    match tokio::task::spawn_blocking(move || rec.recv()).await {
+                        Ok(Ok(ev)) => {
+                            for change in ev.changed_hotkeys {
+                                if change.id != WL_HOTKEY_ID {
+                                    continue;
+                                }
+                                let _ = hk_change_tx
+                                    .send(Msg::SetHotKeyDescription(change.hotkey_description))
+                                    .await;
+                                break;
+                            }
+                        }
+                        _ => return,
+                    }
+                }
+            });
 
             let hk_event_rx = GlobalHotKeyEvent::receiver();
             while let Ok(Ok(msg)) = tokio::task::spawn_blocking(|| hk_event_rx.recv()).await {

@@ -19,7 +19,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::{
     APP_ID, PADDING, SPACING,
-    hotkey::{hotkeys, hotkeys_wl_change},
+    hotkey::hotkeys,
     pulse::PulseAudioState,
     tray::Tray,
 };
@@ -239,10 +239,9 @@ impl App {
         Subscription::batch([
             close_requests().map(|_| Msg::Close),
             Subscription::run(hotkeys),
-            Subscription::run(hotkeys_wl_change),
             if !self.recording_hotkey { Subscription::none() } else {
                 keyboard::listen().map(|k_ev| match k_ev {
-                    keyboard::Event::KeyPressed { key, modified_key, physical_key, location, modifiers, text, repeat } => {
+                    keyboard::Event::KeyPressed { key, modified_key: _, physical_key: _, location: _, modifiers: _, text: _, repeat: _ } => {
                         let key_str = match key {
                             keyboard::Key::Named(named) => format!("{named:?}"),
                             keyboard::Key::Character(c) => c.into(),
@@ -252,10 +251,6 @@ impl App {
                         Msg::StopHotKeyRecording(key_str)
                     },
                     _ => Msg::None
-                    // keyboard::Event::KeyReleased { key, modified_key, physical_key, location, modifiers } => {
-                    // },
-                    // keyboard::Event::ModifiersChanged(modifiers) => {
-                    // },
                 })
             }
         ])
@@ -348,12 +343,12 @@ impl App {
     }
 
     fn hotkey_indicator(&self) -> Element<'_, Msg> {
-        if using_wayland() {
+        if !using_wayland() {
             text(format!("Hotkey: {}", self.hotkey_description)).into()
         } else {
             let record_btn = button("Change").on_press(Msg::StartHotKeyRecording);
             let txt = text(format!("Hotkey: {}", self.hotkey_description));
-            row![txt, record_btn].into()
+            row![txt, record_btn].spacing(SPACING).align_y(Vertical::Center).into()
         }
     }
 
