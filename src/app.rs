@@ -217,15 +217,15 @@ impl App {
             Msg::SetTheme(theme) => self.theme = theme,
             Msg::InitChangeHotKeySender(change_hotkey) => self.change_hotkey_tx = Some(change_hotkey),
             Msg::StartHotKeyRecording => {
-                        self.recording_hotkey = true;
-                    },
+                self.recording_hotkey = true;
+            },
             Msg::StopHotKeyRecording(hk_string) => {
-                        match (self.change_hotkey_tx.clone(), HotKey::from_str(&hk_string)) {
-                            (Some(tx), Ok(hk)) => return Task::future(async move { tx.send(hk).await }).discard(),
-                            _ => {},
-                        }
-                        self.recording_hotkey = false;
-                    }
+                self.recording_hotkey = false;
+                match (self.change_hotkey_tx.clone(), HotKey::from_str(&hk_string)) {
+                    (Some(tx), Ok(hk)) => return Task::future(async move { tx.send(hk).await }).discard(),
+                    _ => {},
+                }
+            }
             Msg::None => {},
         };
         Task::none()
