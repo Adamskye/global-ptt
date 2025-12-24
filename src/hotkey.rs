@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
 use global_hotkey::{
-    GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
     hotkey::{Code, HotKey},
-    wayland::{WlHotKeysChangedEvent, WlNewHotKeyAction, using_wayland},
+    wayland::{using_wayland, WlHotKeysChangedEvent, WlNewHotKeyAction},
+    GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
 };
 use iced::{
     futures::{FutureExt, SinkExt, Stream},
     stream,
 };
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex};
 
-use crate::{APP_ID, WL_HOTKEY_ID, app::Msg, config::Config};
+use crate::{app::Msg, config::Config, APP_ID, WL_HOTKEY_ID};
 
 pub fn hotkeys_wl_change() -> impl Stream<Item = Msg> {
     // receiving keypress changes under Wayland
@@ -108,6 +108,7 @@ pub fn hotkeys() -> impl Stream<Item = Msg> {
                 while let Some(new_hk) = hk_change_rx.recv().await {
                     let mut current_hk = *current_hk.lock().await;
                     let _ = gh.unregister(current_hk);
+                    let _ = gh.register(new_hk);
                     config.set_hotkey(new_hk);
                     current_hk = new_hk;
                     let _ = hk_event_tx
