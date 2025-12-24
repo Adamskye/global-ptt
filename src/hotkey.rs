@@ -106,11 +106,11 @@ pub fn hotkeys() -> impl Stream<Item = Msg> {
             let mut hk_event_tx = tx.clone();
             tokio::spawn(async move {
                 while let Some(new_hk) = hk_change_rx.recv().await {
-                    let mut current_hk = *current_hk.lock().await;
-                    let _ = gh.unregister(current_hk);
+                    let mut current_hk = current_hk.lock().await;
+                    let _ = gh.unregister(*current_hk);
                     let _ = gh.register(new_hk);
                     config.set_hotkey(new_hk);
-                    current_hk = new_hk;
+                    *current_hk = new_hk;
                     let _ = hk_event_tx
                         .send(Msg::SetHotKeyDescription(current_hk.into_string()))
                         .await;
