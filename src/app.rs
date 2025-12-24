@@ -7,16 +7,11 @@ use std::{
 
 use ashpd::zbus::block_on;
 use fs4::fs_std::FileExt;
-use global_hotkey::{
-    hotkey::{Code, HotKey},
-    wayland::{using_wayland, WlHotKeysChangedEvent, WlNewHotKeyAction},
-    GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
-};
+use global_hotkey::wayland::using_wayland;
 use iced::{
     alignment::{Horizontal, Vertical},
     font::{Style, Weight},
-    futures::{FutureExt, SinkExt, Stream, StreamExt},
-    stream,
+    futures::StreamExt,
     widget::{button, checkbox, column, pick_list, row, rule, space, text},
     window::{close_requests, Id, Settings},
     Element, Font, Length, Subscription, Task, Theme,
@@ -25,7 +20,12 @@ use ksni::{Handle, TrayMethods};
 use nix::{sys::signal::Signal, unistd::Pid};
 use signal_hook_tokio::Signals;
 
-use crate::{pulse::PulseAudioState, tray::Tray, APP_ID, PADDING, SPACING, WL_HOTKEY_ID};
+use crate::{
+    hotkey::{hotkeys, hotkeys_wl_change},
+    pulse::PulseAudioState,
+    tray::Tray,
+    APP_ID, PADDING, SPACING,
+};
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -224,8 +224,8 @@ impl App {
     pub fn subscription(&self) -> Subscription<Msg> {
         Subscription::batch([
             close_requests().map(|_| Msg::Close),
-            Subscription::run(global_shortcuts),
-            Subscription::run(global_shortcuts_wl_change),
+            Subscription::run(hotkeys),
+            Subscription::run(hotkeys_wl_change),
         ])
     }
 
@@ -305,7 +305,11 @@ impl App {
     }
 
     fn hotkey_indicator(&self) -> Element<'_, Msg> {
-        text(format!("Hotkey: {}", self.hotkey_description)).into()
+        if using_wayland() {
+            text(format!("Hotkey: {}", self.hotkey_description)).into()
+        } else {
+            text(format!("Hotkey: {}", self.hotkey_description)).into()
+        }
     }
 
     fn select_mic(&self, backend: &Backend) -> Element<'_, Msg> {
@@ -323,88 +327,6 @@ impl App {
             .align_y(Vertical::Center)
             .into()
     }
-}
-
-fn global_shortcuts_wl_change() -> impl Stream<Item = Msg> {
-    // receiving keypress changes under Wayland
-    stream::channel(100, async |mut tx| {
-        // TODO: make this cleaner
-        loop {
-            let Some(rec) = WlHotKeysChangedEvent::receiver() else {
-                return;
-            };
-
-            match tokio::task::spawn_blocking(move || rec.recv()).await {
-                Ok(Ok(ev)) => {
-                    for change in ev.changed_hotkeys {
-                        if change.id != WL_HOTKEY_ID {
-                            continue;
-                        }
-                        let _ = tx
-                            .send(Msg::SetHotKeyDescription(change.hotkey_description))
-                            .await;
-                        break;
-                    }
-                }
-                _ => return,
-            }
-        }
-    })
-}
-
-fn global_shortcuts() -> impl Stream<Item = Msg> {
-    stream::channel(100, async |mut tx| {
-        let Ok(gh) = GlobalHotKeyManager::new() else {
-            let _ = tx.send(Msg::GlobalShortcutsFail).await;
-            return;
-        };
-
-        let default_hotkey = HotKey::new(None, Code::Insert);
-        let hk_id = if using_wayland() {
-            if gh
-                .wl_register_all(
-                    APP_ID,
-                    &[WlNewHotKeyAction::new(
-                        WL_HOTKEY_ID,
-                        "Activate push-to-talk",
-                        Some(default_hotkey),
-                    )],
-                )
-                .is_err()
-            {
-                let _ = tx.send(Msg::GlobalShortcutsFail).await;
-                return;
-            }
-
-            if let Some(hk) = gh
-                .wl_get_hotkeys()
-                .iter()
-                .find(|hk| hk.id() == WL_HOTKEY_ID)
-            {
-                let _ = tx
-                    .send(Msg::SetHotKeyDescription(
-                        hk.hotkey_description().to_string(),
-                    ))
-                    .await;
-            }
-
-            WL_HOTKEY_ID
-        } else {
-            let _ = gh.register(default_hotkey);
-            default_hotkey.id()
-        };
-
-        let receiver = GlobalHotKeyEvent::receiver();
-        while let Ok(Ok(msg)) = tokio::task::spawn_blocking(|| receiver.recv()).await {
-            if msg.id() != hk_id {
-                continue;
-            }
-
-            let _ = tx
-                .send(Msg::SetMuted(msg.state() == HotKeyState::Released))
-                .now_or_never();
-        }
-    })
 }
 
 fn title<'a>(content: impl text::IntoFragment<'a>) -> Element<'a, Msg> {

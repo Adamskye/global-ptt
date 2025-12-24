@@ -1,6 +1,8 @@
 mod app;
 mod pulse;
 mod tray;
+mod config;
+mod hotkey;
 
 use crate::app::App;
 
