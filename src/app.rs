@@ -24,6 +24,7 @@ use nix::{
     sys::signal::{self, Signal},
     unistd::Pid,
 };
+use notify_rust::Notification;
 use signal_hook_tokio::Signals;
 use tokio::sync::mpsc::Sender;
 
@@ -221,7 +222,13 @@ impl App {
 
                 return task;
             }
-            Msg::Close => return iced::window::latest().and_then(iced::window::close),
+            Msg::Close => {
+                let _ = Notification::new()
+                    .appname("Global Push-to-Talk")
+                    .summary("Global Push-to-Talk is running in the background")
+                    .show();
+                return iced::window::latest().and_then(iced::window::close);
+            }
             Msg::Exit => {
                 if let BackendState::Loaded(b) = &mut self.backend {
                     b.pa_state.remove_virtual_mic();
