@@ -1,10 +1,13 @@
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
+    os::unix::net::UnixStream,
     process::exit,
     str::FromStr,
     sync::Arc,
 };
+
+use std::path::Path;
 
 use ashpd::zbus::block_on;
 use fs4::fs_std::FileExt;
@@ -26,7 +29,12 @@ use nix::{
 };
 use notify_rust::Notification;
 use signal_hook_tokio::Signals;
-use tokio::sync::mpsc::Sender;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::UnixListener,
+    sync::mpsc::Sender,
+};
+use tokio_stream::wrappers::UnixListenerStream;
 
 use crate::{
     APP_ID, PADDING, SPACING,
@@ -74,46 +82,49 @@ pub struct App {
     theme: Option<Theme>,
     change_hotkey_tx: Option<Sender<HotKey>>,
     recording_hotkey: bool,
-    _flock: Option<Arc<File>>,
+    // _flock: Option<Arc<File>>,
 }
 
 impl App {
     pub fn new() -> (Self, Task<Msg>) {
         // there must only be one running instance of this application
-        let lock_path = format!("/tmp/{APP_ID}.{}.lock", nix::unistd::Uid::current());
-        let _flock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map(|mut file| {
-                if !matches!(file.try_lock_exclusive(), Ok(true)) {
-                    // there is another running instance
-                    eprintln!("There is another running instance!");
 
-                    let mut c = String::new();
-                    let _ = file.read_to_string(&mut c);
+        // try to open existing instance
+        let socket_path = format!("/tmp/{APP_ID}.{}", nix::unistd::Uid::current());
+        //let socket = Path::new(&socket_path);
+        if let Ok(mut stream) = UnixStream::connect(socket_path.clone()) {
+            if stream.write_all(b"open").is_ok() {
+                // existing instance successfully opened
+                exit(0);
+            }
+        }
 
-                    let sig = Some(Signal::SIGUSR1);
-                    if let Ok(pid) = c.parse::<i32>()
-                        && signal::kill(Pid::from_raw(pid), sig).is_ok()
-                    {
-                        exit(0);
-                    }
+        // create new unix listener
+        let _ = std::fs::remove_file(&socket_path);
+        let ipc_stream: Task<Msg> = Task::future(async move { UnixListener::bind(socket_path) })
+            .then(|res| {
+                let Ok(listener) = res else {
+                    return Task::none();
+                };
 
-                    // open a new instance, if in doubt
-                    Arc::new(file)
-                } else {
-                    // write PID into it
-                    let pid = nix::unistd::getpid();
-                    let _ = file.set_len(0);
-                    let _ = file.write(pid.to_string().as_bytes());
+                let stream = UnixListenerStream::new(listener);
+                Task::stream(stream).then(|incoming| {
+                    Task::future(async {
+                        let Ok(mut incoming) = incoming else {
+                            return Msg::None;
+                        };
 
-                    Arc::new(file)
-                }
-            })
-            .ok();
+                        let mut buffer = String::new();
+                        let _ = incoming.read_to_string(&mut buffer).await;
+
+                        if buffer == "open" {
+                            Msg::ShowWindow
+                        } else {
+                            Msg::None
+                        }
+                    })
+                })
+            });
 
         let pa_state = PulseAudioState::init();
         let (tray_builder, stream) = Tray::new();
@@ -140,7 +151,6 @@ impl App {
             hotkey_description: "".into(),
             theme: None,
             backend,
-            _flock,
             change_hotkey_tx: None,
             recording_hotkey: false,
         };
@@ -155,6 +165,7 @@ impl App {
             Task::stream(stream),
             window_open_task.discard(),
             iced::font::load(LUCIDE_FONT_BYTES).discard(),
+            ipc_stream,
             Task::stream(
                 mundy::Preferences::stream(mundy::Interest::ColorScheme).map(|c| {
                     Msg::SetTheme(match c.color_scheme {
