@@ -1,4 +1,4 @@
-use std::{cell::RefCell, ops::Deref, rc::Rc, sync::mpsc};
+use std::{cell::RefCell, fmt::Display, ops::Deref, rc::Rc, sync::mpsc};
 
 use libpulse_binding::{
     callbacks::ListResult,
@@ -25,9 +25,9 @@ pub struct InputDevice {
     pub description: String,
 }
 
-impl ToString for InputDevice {
-    fn to_string(&self) -> String {
-        self.description.clone()
+impl Display for InputDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.description)
     }
 }
 

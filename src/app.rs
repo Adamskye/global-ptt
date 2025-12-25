@@ -15,9 +15,10 @@ use iced::{
     font::{Style, Weight},
     futures::StreamExt,
     keyboard,
-    widget::{button, checkbox, column, pick_list, row, rule, space, text},
+    widget::{button, checkbox, column, pick_list, row, rule, space, text, tooltip},
     window::{Id, Settings, close_requests},
 };
+use iced_fonts::{LUCIDE_FONT_BYTES, lucide};
 use ksni::{Handle, TrayMethods};
 use nix::{
     sys::signal::{self, Signal},
@@ -151,12 +152,13 @@ impl App {
         let tasks = Task::batch([
             Task::stream(stream),
             window_open_task.discard(),
+            iced::font::load(LUCIDE_FONT_BYTES).discard(),
             Task::stream(
                 mundy::Preferences::stream(mundy::Interest::ColorScheme).map(|c| {
                     Msg::SetTheme(match c.color_scheme {
                         mundy::ColorScheme::NoPreference => None,
                         mundy::ColorScheme::Light => Some(Theme::Light),
-                        mundy::ColorScheme::Dark => Some(Theme::Dark),
+                        mundy::ColorScheme::Dark => Some(Theme::KanagawaDragon),
                     })
                 }),
             ),
@@ -247,7 +249,8 @@ impl App {
     }
 
     pub fn theme(&self, _: Id) -> Option<Theme> {
-        self.theme.clone()
+        //self.theme.clone()
+        Some(Theme::KanagawaDragon)
     }
 
     pub fn subscription(&self) -> Subscription<Msg> {
@@ -291,7 +294,7 @@ impl App {
             sep,
             self.toggle_active(backend),
             self.select_mic(backend),
-            self.mute_indicator(),
+            space().height(Length::Fill),
             self.hotkey_indicator()
         ]
         .padding(PADDING)
@@ -329,11 +332,6 @@ impl App {
     }
 
     fn toggle_active(&self, backend: &Backend) -> Element<'_, Msg> {
-        let weak_text_style = |theme: &Theme| {
-            let color = theme.extended_palette().secondary.base.color;
-            text::Style { color: Some(color) }
-        };
-
         if backend.pa_state.get_active_source_name().is_none() {
             return row![
                 text("Select a microphone to enable push-to-talk")
@@ -367,7 +365,7 @@ impl App {
         .style(weak_text_style);
 
         column![
-            row![label, checkbox]
+            row![label, checkbox, self.mute_indicator()]
                 .spacing(SPACING)
                 .align_y(Vertical::Center),
             info
@@ -378,18 +376,37 @@ impl App {
     }
 
     fn mute_indicator(&self) -> Element<'_, Msg> {
-        text(if self.muted { "Muted" } else { "Not Muted" })
-            .color(if self.muted {
-                [1.0, 0.0, 0.0]
-            } else {
-                [0.0, 1.0, 0.0]
-            })
-            .into()
+        let icon = if self.muted {
+            lucide::mic_off()
+        } else {
+            lucide::mic()
+        }
+        .align_y(Vertical::Bottom);
+
+        icon.color(if self.muted {
+            [0.8, 0.0, 0.0]
+        } else {
+            [0.0, 0.8, 0.0]
+        })
+        .into()
     }
 
     fn hotkey_indicator(&self) -> Element<'_, Msg> {
+        let italic = Font {
+            style: Style::Italic,
+            ..Default::default()
+        };
         if using_wayland() {
-            text(format!("Hotkey: {}", self.hotkey_description)).into()
+            tooltip(
+                text(format!("Hotkey(s): {}", self.hotkey_description))
+                    .style(weak_text_style)
+                    .font(italic),
+                text("Configure these hotkeys in your system's settings")
+                    .style(weak_text_style)
+                    .font(italic),
+                tooltip::Position::Top,
+            )
+            .into()
         } else {
             let record_btn = button("Change").on_press(Msg::StartHotKeyRecording);
             let txt = text(format!("Hotkey: {}", self.hotkey_description));
@@ -403,15 +420,13 @@ impl App {
     fn select_mic(&self, backend: &Backend) -> Element<'_, Msg> {
         let label = text("Microphone");
         let input_devs = backend.pa_state.get_input_devices();
-        let pick_list = pick_list(
-            input_devs.clone(),
-            input_devs
-                .into_iter()
-                .find(|dev| Some(dev.name.as_str()) == backend.pa_state.get_active_source_name()),
-            |dev| Msg::ChooseMicrophone(dev.name),
-        )
-        .width(Length::Fill)
-        .placeholder("Choose Microphone...");
+        let selected = input_devs
+            .iter()
+            .find(|dev| Some(dev.name.as_str()) == backend.pa_state.get_active_source_name())
+            .cloned();
+        let pick_list = pick_list(input_devs, selected, |dev| Msg::ChooseMicrophone(dev.name))
+            .width(Length::Fill)
+            .placeholder("Choose Microphone...");
 
         let refresh_btn = button("⟳").on_press(Msg::None);
 
@@ -427,9 +442,16 @@ impl App {
 fn title<'a>(content: impl text::IntoFragment<'a>) -> Element<'a, Msg> {
     text(content)
         .font(Font {
-            weight: Weight::Bold,
+            weight: Weight::Light,
             ..Default::default()
         })
-        .size(18.0)
+        .size(24.0)
+        .width(Length::Fill)
+        .align_x(Horizontal::Center)
         .into()
+}
+
+fn weak_text_style(theme: &Theme) -> text::Style {
+    let color = theme.extended_palette().secondary.strong.color;
+    text::Style { color: Some(color) }
 }
