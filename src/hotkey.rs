@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
 use global_hotkey::{
-    hotkey::{Code, HotKey},
-    wayland::{using_wayland, WlHotKeysChangedEvent, WlNewHotKeyAction},
     GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
+    hotkey::{Code, HotKey},
+    wayland::{WlHotKeysChangedEvent, WlNewHotKeyAction, using_wayland},
 };
 use iced::{
     futures::{FutureExt, SinkExt, Stream},
     stream,
 };
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
-use crate::{app::Msg, config::Config, APP_ID, WL_HOTKEY_ID};
+use crate::{APP_ID, WL_HOTKEY_ID, app::Msg, config::Config};
 
 pub fn hotkeys() -> impl Stream<Item = Msg> {
     stream::channel(100, async |mut tx| {

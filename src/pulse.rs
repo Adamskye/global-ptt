@@ -9,7 +9,7 @@ use libpulse_binding::{
     proplist::{Proplist, properties},
 };
 
-const VIRTUALMIC_DESCRIPTION: &str = "Global Push-to-Talk Virtual Microphone";
+pub const VIRTUALMIC_DESCRIPTION: &str = "Global Push-to-Talk Virtual Microphone";
 const VIRTUALMIC_NAME: &str = "GlobalPushToTalkVirtualMicrophone";
 
 #[derive(Clone)]
@@ -23,7 +23,8 @@ impl PulseAudioState {
     pub fn init() -> Result<Self, Error> {
         let mut proplist = Proplist::new().ok_or(Error::Other)?;
         proplist
-            .set_str(properties::APPLICATION_NAME, "GlobalPushToTalk").map_err(|_| Error::Other)?;
+            .set_str(properties::APPLICATION_NAME, "GlobalPushToTalk")
+            .map_err(|_| Error::Other)?;
 
         let mainloop = Rc::new(RefCell::new(
             Mainloop::new().ok_or(Error::MainloopCreation)?,

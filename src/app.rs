@@ -10,17 +10,26 @@ use ashpd::zbus::block_on;
 use fs4::fs_std::FileExt;
 use global_hotkey::{hotkey::HotKey, wayland::using_wayland};
 use iced::{
-    alignment::{Horizontal, Vertical}, font::{Style, Weight}, futures::StreamExt, keyboard, widget::{button, checkbox, column, pick_list, row, rule, space, text}, window::{close_requests, Id, Settings}, Element, Font, Length, Subscription, Task, Theme
+    Element, Font, Length, Subscription, Task, Theme,
+    alignment::{Horizontal, Vertical},
+    font::{Style, Weight},
+    futures::StreamExt,
+    keyboard,
+    widget::{button, checkbox, column, pick_list, row, rule, space, text},
+    window::{Id, Settings, close_requests},
 };
 use ksni::{Handle, TrayMethods};
-use nix::{sys::signal::Signal, unistd::Pid};
+use nix::{
+    sys::signal::{self, Signal},
+    unistd::Pid,
+};
 use signal_hook_tokio::Signals;
 use tokio::sync::mpsc::Sender;
 
 use crate::{
     APP_ID, PADDING, SPACING,
     hotkey::hotkeys,
-    pulse::PulseAudioState,
+    pulse::{PulseAudioState, VIRTUALMIC_DESCRIPTION},
     tray::Tray,
 };
 
@@ -70,7 +79,7 @@ impl App {
     pub fn new() -> (Self, Task<Msg>) {
         // there must only be one running instance of this application
         let lock_path = format!("/tmp/{APP_ID}.{}.lock", nix::unistd::Uid::current());
-        let flock = OpenOptions::new()
+        let _flock = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
@@ -81,11 +90,12 @@ impl App {
                     // there is another running instance
                     eprintln!("There is another running instance!");
 
-                    let mut content = String::new();
-                    let _ = file.read_to_string(&mut content);
+                    let mut c = String::new();
+                    let _ = file.read_to_string(&mut c);
 
-                    if let Ok(pid) = content.parse::<i32>()
-                        && nix::sys::signal::kill(Pid::from_raw(pid), Some(Signal::SIGUSR1)).is_ok()
+                    let sig = Some(Signal::SIGUSR1);
+                    if let Ok(pid) = c.parse::<i32>()
+                        && signal::kill(Pid::from_raw(pid), sig).is_ok()
                     {
                         exit(0);
                     }
@@ -127,7 +137,7 @@ impl App {
             hotkey_description: "".into(),
             theme: None,
             backend,
-            _flock: flock,
+            _flock,
             change_hotkey_tx: None,
             recording_hotkey: false,
         };
@@ -158,73 +168,80 @@ impl App {
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
             Msg::ChooseMicrophone(mic) => {
-                        if let BackendState::Loaded(b) = &mut self.backend {
-                            b.pa_state.set_virtual_mic(&mic);
-                        }
-                    }
+                if let BackendState::Loaded(b) = &mut self.backend {
+                    b.pa_state.set_virtual_mic(&mic);
+                }
+            }
             Msg::SetActive(a) => {
-                        if let BackendState::Loaded(b) = &mut self.backend {
-                            self.active = a;
-                            if let Some(tray) = &b.tray {
-                                block_on(tray.update(|tray| tray.set_ptt_enabled(a)));
-                            }
-                            return Task::done(Msg::SetMuted(a));
-                        }
+                if let BackendState::Loaded(b) = &mut self.backend {
+                    self.active = a;
+                    if let Some(tray) = &b.tray {
+                        block_on(tray.update(|tray| tray.set_ptt_enabled(a)));
                     }
+                    return Task::done(Msg::SetMuted(a));
+                }
+            }
             Msg::ToggleActive => {
-                        return Task::done(Msg::SetActive(!self.active));
-                    }
+                return Task::done(Msg::SetActive(!self.active));
+            }
             Msg::SetMuted(m) => {
-                        if let BackendState::Loaded(b) = &mut self.backend {
-                            let res = b.pa_state.set_mute(self.active && m);
-                            if let Err(e) = res {
-                                eprintln!("Failed to set mute: {}", e);
-                            }
-                            self.muted = self.active && m;
-                        }
+                if let BackendState::Loaded(b) = &mut self.backend {
+                    let res = b.pa_state.set_mute(self.active && m);
+                    if let Err(e) = res {
+                        eprintln!("Failed to set mute: {}", e);
                     }
-            Msg::GlobalShortcutsFail => self.backend = BackendState::Error("Failed to load global shortcuts. Push-to-talk will not work. Make sure you are using a Wayland compositor with a portal implementation that supports global shortcuts.".into()),
+                    self.muted = self.active && m;
+                }
+            }
+            Msg::GlobalShortcutsFail => {
+                let msg = "Failed to load global shortcuts. Push-to-talk will not work. Make sure you are using a Wayland compositor with a portal implementation that supports global shortcuts.";
+                self.backend = BackendState::Error(msg.into());
+            }
             Msg::SetHotKeyDescription(desc) => self.hotkey_description = desc,
             Msg::ShowWindow => {
-                        let size = match self.backend {
-                                        BackendState::Loaded(_) => (680, 420),
-                                        BackendState::Error(_) => (280, 180),
-                                    };
+                let size = match self.backend {
+                    BackendState::Loaded(_) => (680, 420),
+                    BackendState::Error(_) => (280, 180),
+                };
 
-                        let task = iced::window::latest().then(move |res| {
-                            if res.is_some() {
-                                Task::none()
-                            } else {
-                                iced::window::open(Settings {
-                                        size: size.into(),
-                                        ..Default::default()
-                                    })
-                                    .1
-                                    .discard()
-                            }
-                        });
-
-                        return task;
+                let task = iced::window::latest().then(move |res| {
+                    if res.is_some() {
+                        Task::none()
+                    } else {
+                        iced::window::open(Settings {
+                            size: size.into(),
+                            ..Default::default()
+                        })
+                        .1
+                        .discard()
                     }
+                });
+
+                return task;
+            }
             Msg::Close => return iced::window::latest().and_then(iced::window::close),
             Msg::Exit => {
-                        if let BackendState::Loaded(b) = &mut self.backend {
-                            b.pa_state.remove_virtual_mic();
-                        }
-                        exit(0);
-                    }
+                if let BackendState::Loaded(b) = &mut self.backend {
+                    b.pa_state.remove_virtual_mic();
+                }
+                exit(0);
+            }
             Msg::SetTheme(theme) => self.theme = theme,
-            Msg::InitChangeHotKeySender(change_hotkey) => self.change_hotkey_tx = Some(change_hotkey),
+            Msg::InitChangeHotKeySender(change_hotkey) => {
+                self.change_hotkey_tx = Some(change_hotkey)
+            }
             Msg::StartHotKeyRecording => {
                 self.recording_hotkey = true;
-            },
+            }
             Msg::StopHotKeyRecording(hk_string) => {
                 self.recording_hotkey = false;
-                if let (Some(tx), Ok(hk)) = (self.change_hotkey_tx.clone(), HotKey::from_str(&hk_string)) {
+                if let (Some(tx), Ok(hk)) =
+                    (self.change_hotkey_tx.clone(), HotKey::from_str(&hk_string))
+                {
                     return Task::future(async move { tx.send(hk).await }).discard();
                 }
             }
-            Msg::None => {},
+            Msg::None => {}
         };
         Task::none()
     }
@@ -237,9 +254,9 @@ impl App {
         Subscription::batch([
             close_requests().map(|_| Msg::Close),
             Subscription::run(hotkeys),
-            if !self.recording_hotkey { Subscription::none() } else {
+            if self.recording_hotkey {
                 keyboard::listen().map(|k_ev| match k_ev {
-                    keyboard::Event::KeyPressed { key, modified_key: _, physical_key: _, location: _, modifiers: _, text: _, repeat: _ } => {
+                    keyboard::Event::KeyPressed { key, .. } => {
                         let key_str = match key {
                             keyboard::Key::Named(named) => format!("{named:?}"),
                             keyboard::Key::Character(c) => c.into(),
@@ -247,10 +264,12 @@ impl App {
                         };
 
                         Msg::StopHotKeyRecording(key_str)
-                    },
-                    _ => Msg::None
+                    }
+                    _ => Msg::None,
                 })
-            }
+            } else {
+                Subscription::none()
+            },
         ])
     }
 
@@ -284,7 +303,11 @@ impl App {
         let txt = text("Enter a key combination...");
         let space1 = space().width(Length::Fill).height(Length::Fill);
         let space2 = space().width(Length::Fill).height(Length::Fill);
-        column![space1, txt, space2].align_x(Horizontal::Center).width(Length::Fill).height(Length::Fill).into()
+        column![space1, txt, space2]
+            .align_x(Horizontal::Center)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
     fn show_error<'a>(message: String) -> Element<'a, Msg> {
@@ -306,12 +329,19 @@ impl App {
     }
 
     fn toggle_active(&self, backend: &Backend) -> Element<'_, Msg> {
+        let weak_text_style = |theme: &Theme| {
+            let color = theme.extended_palette().secondary.base.color;
+            text::Style { color: Some(color) }
+        };
+
         if backend.pa_state.get_active_source().is_none() {
             return row![
-                text("Select a microphone to enable push-to-talk").font(Font {
-                    style: Style::Italic,
-                    ..Default::default()
-                })
+                text("Select a microphone to enable push-to-talk")
+                    .font(Font {
+                        style: Style::Italic,
+                        ..Default::default()
+                    })
+                    .style(weak_text_style)
             ]
             .spacing(SPACING)
             .padding(PADDING)
@@ -319,15 +349,28 @@ impl App {
             .into();
         }
 
-        let text = text("Enable");
+        let label = text("Enable");
         let checkbox = checkbox(self.active)
             .on_toggle_maybe(backend.pa_state.get_active_source().map(|_| Msg::SetActive));
 
-        row![text, checkbox]
-            .spacing(SPACING)
-            .padding(PADDING)
-            .align_y(Vertical::Center)
-            .into()
+        let info = text(format!(
+            "Select \"{VIRTUALMIC_DESCRIPTION}\" in any application to use push-to-talk"
+        ))
+        .font(Font {
+            style: Style::Italic,
+            ..Default::default()
+        })
+        .style(weak_text_style);
+
+        column![
+            row![label, checkbox]
+                .spacing(SPACING)
+                .align_y(Vertical::Center),
+            info
+        ]
+        .spacing(SPACING)
+        .padding(PADDING)
+        .into()
     }
 
     fn mute_indicator(&self) -> Element<'_, Msg> {
@@ -341,12 +384,15 @@ impl App {
     }
 
     fn hotkey_indicator(&self) -> Element<'_, Msg> {
-        if !using_wayland() {
+        if using_wayland() {
             text(format!("Hotkey: {}", self.hotkey_description)).into()
         } else {
             let record_btn = button("Change").on_press(Msg::StartHotKeyRecording);
             let txt = text(format!("Hotkey: {}", self.hotkey_description));
-            row![txt, record_btn].spacing(SPACING).align_y(Vertical::Center).into()
+            row![txt, record_btn]
+                .spacing(SPACING)
+                .align_y(Vertical::Center)
+                .into()
         }
     }
 
@@ -357,11 +403,15 @@ impl App {
             backend.pa_state.get_active_source().map(|s| s.to_string()),
             Msg::ChooseMicrophone,
         )
+        .width(Length::Fill)
         .placeholder("Choose Microphone...");
 
-        row![label, pick_list]
+        let refresh_btn = button("⟳").on_press(Msg::None);
+
+        row![label, pick_list, refresh_btn]
             .spacing(SPACING)
             .padding(PADDING)
+            .width(Length::Fill)
             .align_y(Vertical::Center)
             .into()
     }
