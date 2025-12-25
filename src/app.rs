@@ -31,7 +31,7 @@ use tokio::sync::mpsc::Sender;
 use crate::{
     APP_ID, PADDING, SPACING,
     hotkey::hotkeys,
-    pulse::{PulseAudioState, VIRTUALMIC_DESCRIPTION},
+    pulse::{InputDevice, PulseAudioState, VIRTUALMIC_DESCRIPTION},
     tray::Tray,
 };
 
@@ -339,7 +339,7 @@ impl App {
     }
 
     fn toggle_active(&self, backend: &Backend) -> Element<'_, Msg> {
-        if backend.pa_state.get_active_source_name().is_none() {
+        if self.get_selected_mic(backend).is_none() {
             return row![
                 text("Select a microphone to enable push-to-talk")
                     .font(Font {
@@ -355,12 +355,7 @@ impl App {
         }
 
         let label = text("Enable");
-        let checkbox = checkbox(self.active).on_toggle_maybe(
-            backend
-                .pa_state
-                .get_active_source_name()
-                .map(|_| Msg::SetActive),
-        );
+        let checkbox = checkbox(self.active).on_toggle(Msg::SetActive);
 
         let info = text(format!(
             "Select \"{VIRTUALMIC_DESCRIPTION}\" in any application to use push-to-talk"
@@ -427,10 +422,7 @@ impl App {
     fn select_mic(&self, backend: &Backend) -> Element<'_, Msg> {
         let label = text("Microphone");
         let input_devs = backend.pa_state.get_input_devices();
-        let selected = input_devs
-            .iter()
-            .find(|dev| Some(dev.name.as_str()) == backend.pa_state.get_active_source_name())
-            .cloned();
+        let selected = self.get_selected_mic(backend);
         let pick_list = pick_list(input_devs, selected, |dev| Msg::ChooseMicrophone(dev.name))
             .width(Length::Fill)
             .placeholder("Choose Microphone...");
@@ -443,6 +435,15 @@ impl App {
             .width(Length::Fill)
             .align_y(Vertical::Center)
             .into()
+    }
+
+    fn get_selected_mic(&self, backend: &Backend) -> Option<InputDevice> {
+        backend
+            .pa_state
+            .get_input_devices()
+            .iter()
+            .find(|dev| Some(dev.name.as_str()) == backend.pa_state.get_active_source_name())
+            .cloned()
     }
 }
 
