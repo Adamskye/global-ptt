@@ -334,7 +334,7 @@ impl App {
             text::Style { color: Some(color) }
         };
 
-        if backend.pa_state.get_active_source().is_none() {
+        if backend.pa_state.get_active_source_name().is_none() {
             return row![
                 text("Select a microphone to enable push-to-talk")
                     .font(Font {
@@ -350,8 +350,12 @@ impl App {
         }
 
         let label = text("Enable");
-        let checkbox = checkbox(self.active)
-            .on_toggle_maybe(backend.pa_state.get_active_source().map(|_| Msg::SetActive));
+        let checkbox = checkbox(self.active).on_toggle_maybe(
+            backend
+                .pa_state
+                .get_active_source_name()
+                .map(|_| Msg::SetActive),
+        );
 
         let info = text(format!(
             "Select \"{VIRTUALMIC_DESCRIPTION}\" in any application to use push-to-talk"
@@ -398,10 +402,13 @@ impl App {
 
     fn select_mic(&self, backend: &Backend) -> Element<'_, Msg> {
         let label = text("Microphone");
+        let input_devs = backend.pa_state.get_input_devices();
         let pick_list = pick_list(
-            backend.pa_state.get_input_devices(),
-            backend.pa_state.get_active_source().map(|s| s.to_string()),
-            Msg::ChooseMicrophone,
+            input_devs.clone(),
+            input_devs
+                .into_iter()
+                .find(|dev| Some(dev.name.as_str()) == backend.pa_state.get_active_source_name()),
+            |dev| Msg::ChooseMicrophone(dev.name),
         )
         .width(Length::Fill)
         .placeholder("Choose Microphone...");

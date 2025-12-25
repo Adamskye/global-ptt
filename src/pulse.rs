@@ -19,6 +19,24 @@ pub struct PulseAudioState {
     src_name: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct InputDevice {
+    pub name: String,
+    pub description: String,
+}
+
+impl ToString for InputDevice {
+    fn to_string(&self) -> String {
+        self.description.clone()
+    }
+}
+
+impl PartialEq for InputDevice {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
 impl PulseAudioState {
     pub fn init() -> Result<Self, Error> {
         let mut proplist = Proplist::new().ok_or(Error::Other)?;
@@ -137,7 +155,7 @@ impl PulseAudioState {
         }
     }
 
-    pub fn get_active_source(&self) -> Option<&str> {
+    pub fn get_active_source_name(&self) -> Option<&str> {
         self.src_name.as_deref()
     }
 
@@ -162,7 +180,7 @@ impl PulseAudioState {
         }
     }
 
-    pub fn get_input_devices(&self) -> Vec<String> {
+    pub fn get_input_devices(&self) -> Vec<InputDevice> {
         let mut vec = Vec::new();
         let (tx, rx) = mpsc::channel();
         let op = self
@@ -174,7 +192,14 @@ impl PulseAudioState {
                     && let Some(name) = &i.name
                     && name != VIRTUALMIC_NAME
                 {
-                    let _ = tx.send(name.to_string());
+                    let _ = tx.send(InputDevice {
+                        name: name.to_string(),
+                        description: i
+                            .description
+                            .as_deref()
+                            .map(|s| s.to_string())
+                            .unwrap_or(name.to_string()),
+                    });
                 }
             });
 
