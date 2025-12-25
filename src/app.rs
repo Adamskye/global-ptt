@@ -16,7 +16,7 @@ use iced::{
     futures::StreamExt,
     keyboard,
     widget::{button, checkbox, column, pick_list, row, rule, space, text, tooltip},
-    window::{Id, Settings, close_requests},
+    window::{Id, Settings, UserAttention, close_requests},
 };
 use iced_fonts::{LUCIDE_FONT_BYTES, lucide};
 use ksni::{Handle, TrayMethods};
@@ -209,8 +209,14 @@ impl App {
                 };
 
                 let task = iced::window::latest().then(move |res| {
-                    if res.is_some() {
-                        Task::none()
+                    if let Some(id) = res {
+                        Task::batch([
+                            iced::window::request_user_attention(
+                                id,
+                                Some(UserAttention::Informational),
+                            ),
+                            iced::window::gain_focus(id),
+                        ])
                     } else {
                         iced::window::open(Settings {
                             size: size.into(),
