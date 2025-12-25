@@ -85,7 +85,7 @@ impl App {
             .read(true)
             .write(true)
             .create(true)
-            .truncate(true)
+            .truncate(false)
             .open(&lock_path)
             .map(|mut file| {
                 if !matches!(file.try_lock_exclusive(), Ok(true)) {
@@ -107,6 +107,7 @@ impl App {
                 } else {
                     // write PID into it
                     let pid = nix::unistd::getpid();
+                    let _ = file.set_len(0);
                     let _ = file.write(pid.to_string().as_bytes());
 
                     Arc::new(file)
