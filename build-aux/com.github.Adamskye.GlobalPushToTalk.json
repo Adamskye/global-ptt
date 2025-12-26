@@ -1,0 +1,46 @@
+{
+    "app-id": "com.github.Adamskye.GlobalPushToTalk",
+    "runtime": "org.freedesktop.Platform",
+    "runtime-version": "25.08",
+    "sdk": "org.freedesktop.Sdk",
+    "sdk-extensions": [
+        "org.freedesktop.Sdk.Extension.rust-stable"
+    ],
+    "command": "global-ptt",
+    "finish-args": [
+        "--share=ipc",
+        "--socket=x11",
+        "--socket=wayland",
+        "--socket=fallback-x11",
+        "--socket=pulseaudio",
+        "--socket=session-bus",
+        "--device=dri",
+        "--device=all"
+    ],
+    "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin",
+        "env": {
+            "CARGO_HOME": "/run/build/global-ptt/cargo"
+        },
+        "no-debuginfo": true
+    },
+    "modules": [
+        {
+            "name": "global-ptt",
+            "buildsystem": "simple",
+            "build-commands": [
+                "cargo --offline fetch --manifest-path Cargo.toml --verbose",
+                "cargo --offline build --release --verbose",
+                "install -Dm755 ./target/release/global-ptt -t /app/bin/",
+                "install -Dm644 ./dist/${FLATPAK_ID}.desktop -t /app/share/applications/"
+            ],
+            "sources": [
+                {
+                    "type": "dir",
+                    "path": "../"
+                },
+                "cargo-sources.json"
+            ]
+        }
+    ]
+}

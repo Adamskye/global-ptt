@@ -1,16 +1,6 @@
-use std::{
-    fs::{File, OpenOptions},
-    io::{Read, Write},
-    os::unix::net::UnixStream,
-    process::exit,
-    str::FromStr,
-    sync::Arc,
-};
-
-use std::path::Path;
+use std::{io::Write, os::unix::net::UnixStream, process::exit, str::FromStr};
 
 use ashpd::zbus::block_on;
-use fs4::fs_std::FileExt;
 use global_hotkey::{hotkey::HotKey, wayland::using_wayland};
 use iced::{
     Element, Font, Length, Subscription, Task, Theme,
@@ -18,22 +8,14 @@ use iced::{
     font::{Style, Weight},
     futures::StreamExt,
     keyboard,
-    widget::{button, checkbox, column, pick_list, row, rule, space, text, tooltip},
-    window::{Id, Settings, UserAttention, close_requests},
+    widget::{button, checkbox, column, container, pick_list, row, rule, space, text, tooltip},
+    window::{Id, Settings, UserAttention, close_requests, settings::PlatformSpecific},
 };
-use iced_fonts::{LUCIDE_FONT_BYTES, lucide};
+use iced_fonts::lucide;
 use ksni::{Handle, TrayMethods};
-use nix::{
-    sys::signal::{self, Signal},
-    unistd::Pid,
-};
 use notify_rust::Notification;
 use signal_hook_tokio::Signals;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixListener,
-    sync::mpsc::Sender,
-};
+use tokio::{io::AsyncReadExt, net::UnixListener, sync::mpsc::Sender};
 use tokio_stream::wrappers::UnixListenerStream;
 
 use crate::{
@@ -82,7 +64,6 @@ pub struct App {
     theme: Option<Theme>,
     change_hotkey_tx: Option<Sender<HotKey>>,
     recording_hotkey: bool,
-    // _flock: Option<Arc<File>>,
 }
 
 impl App {
@@ -92,11 +73,11 @@ impl App {
         // try to open existing instance
         let socket_path = format!("/tmp/{APP_ID}.{}", nix::unistd::Uid::current());
         //let socket = Path::new(&socket_path);
-        if let Ok(mut stream) = UnixStream::connect(socket_path.clone()) {
-            if stream.write_all(b"open").is_ok() {
-                // existing instance successfully opened
-                exit(0);
-            }
+        if let Ok(mut stream) = UnixStream::connect(socket_path.clone())
+            && stream.write_all(b"open").is_ok()
+        {
+            // existing instance successfully opened
+            exit(0);
         }
 
         // create new unix listener
@@ -127,23 +108,13 @@ impl App {
             });
 
         let pa_state = PulseAudioState::init();
-        let (tray_builder, stream) = Tray::new();
+        let (tray_builder, tray_stream) = Tray::new();
         let tray = block_on(tray_builder.spawn());
 
         let backend = match (pa_state, tray.ok()) {
             (Ok(pa_state), tray) => BackendState::Loaded(Backend { pa_state, tray }),
             (Err(e), _) => BackendState::Error(e.to_string()),
         };
-
-        let (_, window_open_task) = iced::window::open(Settings {
-            exit_on_close_request: false,
-            size: match backend {
-                BackendState::Loaded(_) => (600, 300),
-                BackendState::Error(_) => (280, 180),
-            }
-            .into(),
-            ..Default::default()
-        });
 
         let this = Self {
             muted: false,
@@ -162,9 +133,8 @@ impl App {
         };
 
         let tasks = Task::batch([
-            Task::stream(stream),
-            window_open_task.discard(),
-            iced::font::load(LUCIDE_FONT_BYTES).discard(),
+            Task::done(Msg::ShowWindow),
+            Task::stream(tray_stream),
             ipc_stream,
             Task::stream(
                 mundy::Preferences::stream(mundy::Interest::ColorScheme).map(|c| {
@@ -215,10 +185,9 @@ impl App {
             Msg::SetHotKeyDescription(desc) => self.hotkey_description = desc,
             Msg::ShowWindow => {
                 let size = match self.backend {
-                    BackendState::Loaded(_) => (680, 420),
+                    BackendState::Loaded(_) => (600, 300),
                     BackendState::Error(_) => (280, 180),
                 };
-
                 let task = iced::window::latest().then(move |res| {
                     if let Some(id) = res {
                         Task::batch([
@@ -230,7 +199,14 @@ impl App {
                         ])
                     } else {
                         iced::window::open(Settings {
+                            exit_on_close_request: false,
                             size: size.into(),
+                            resizable: true,
+                            decorations: true,
+                            platform_specific: PlatformSpecific {
+                                application_id: APP_ID.to_string(),
+                                ..Default::default()
+                            },
                             ..Default::default()
                         })
                         .1
@@ -274,8 +250,7 @@ impl App {
     }
 
     pub fn theme(&self, _: Id) -> Option<Theme> {
-        //self.theme.clone()
-        Some(Theme::KanagawaDragon)
+        self.theme.clone()
     }
 
     pub fn subscription(&self) -> Subscription<Msg> {
@@ -314,17 +289,22 @@ impl App {
         let title = title("Global Push-to-Talk");
         let sep = rule::horizontal(1.0);
 
-        column![
-            title,
-            sep,
-            self.toggle_active(backend),
-            self.select_mic(backend),
-            space().height(Length::Fill),
-            self.hotkey_indicator()
+        let main = container(
+            column![self.toggle_active(backend), self.select_mic(backend),].spacing(SPACING),
+        )
+        .padding(PADDING);
+
+        let footer = row![
+            self.hotkey_indicator(),
+            space().width(Length::Fill),
+            button("Exit").on_press(Msg::Exit)
         ]
-        .padding(PADDING)
-        .spacing(SPACING)
-        .into()
+        .align_y(Vertical::Bottom);
+
+        column![title, sep, main, space().height(Length::Fill), footer]
+            .padding(PADDING)
+            .spacing(SPACING)
+            .into()
     }
 
     fn recording_hotkey(&self) -> Element<'_, Msg> {
@@ -367,7 +347,6 @@ impl App {
                     .style(weak_text_style)
             ]
             .spacing(SPACING)
-            .padding(PADDING)
             .align_y(Vertical::Center)
             .into();
         }
@@ -391,7 +370,6 @@ impl App {
             info
         ]
         .spacing(SPACING)
-        .padding(PADDING)
         .into()
     }
 
@@ -449,7 +427,6 @@ impl App {
 
         row![label, pick_list, refresh_btn]
             .spacing(SPACING)
-            .padding(PADDING)
             .width(Length::Fill)
             .align_y(Vertical::Center)
             .into()

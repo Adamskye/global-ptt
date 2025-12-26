@@ -11,7 +11,9 @@ use iced::{
 };
 use tokio::sync::{Mutex, mpsc};
 
-use crate::{APP_ID, WL_HOTKEY_ID, app::Msg, config::Config};
+use crate::{APP_ID, app::Msg, config::Config};
+
+const WL_HOTKEY_ID: u32 = 0;
 
 pub fn hotkeys() -> impl Stream<Item = Msg> {
     stream::channel(100, async |mut tx| {

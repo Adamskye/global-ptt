@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Global Push-to-Talk
+Comment=Use push-to-talk with any microphone and application.
+Type=Application
+Exec=global-ptt
+Terminal=false
+Categories=Utility;Audio;
+Keywords=Rust;PTT;push-to-talk;global;iced;audio;microphone;sound;communication
+StartupNotify=true
