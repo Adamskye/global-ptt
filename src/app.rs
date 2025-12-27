@@ -81,7 +81,6 @@ impl App {
 
         // try to open existing instance
         let socket_path = format!("/tmp/{APP_ID}.{}", nix::unistd::Uid::current());
-        //let socket = Path::new(&socket_path);
         if let Ok(mut stream) = UnixStream::connect(socket_path.clone())
             && stream.write_all(b"open").is_ok()
         {
@@ -162,11 +161,7 @@ impl App {
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
             Msg::None => {}
-            Msg::ChooseMicrophone(mic) => {
-                if let BackendState::Loaded(b) = &mut self.backend {
-                    b.pa_state.set_virtual_mic(&mic);
-                }
-            }
+            Msg::ChooseMicrophone(mic) => return self.choose_microphone(&mic),
             Msg::SetActive(a) => {
                 if let BackendState::Loaded(b) = &mut self.backend {
                     self.active = a;
@@ -200,6 +195,22 @@ impl App {
             Msg::StopHotKeyRecording(hk_string) => return self.finish_hotkey_recording(&hk_string),
         }
         Task::none()
+    }
+
+    fn choose_microphone(&mut self, mic: &str) -> Task<Msg> {
+        if let BackendState::Loaded(b) = &mut self.backend {
+            let is_first_time = b.pa_state.get_active_source_name().is_none();
+            b.pa_state.set_virtual_mic(mic);
+
+            // enable ptt automatically after choosing microphone for the first time
+            if is_first_time {
+                Task::done(Msg::SetActive(true))
+            } else {
+                Task::none()
+            }
+        } else {
+            Task::none()
+        }
     }
 
     fn finish_hotkey_recording(&mut self, hk_string: &str) -> Task<Msg> {
