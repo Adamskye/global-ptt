@@ -1,4 +1,5 @@
 #![deny(clippy::unwrap_used)]
+#![warn(clippy::pedantic)]
 
 mod app;
 mod config;

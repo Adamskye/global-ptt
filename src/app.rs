@@ -128,7 +128,7 @@ impl App {
         let this = Self {
             muted: false,
             active: false,
-            hk_descriptions: Default::default(),
+            hk_descriptions: HotKeyConfig::default(),
             theme: None,
             backend,
             change_hotkey_tx: None,
@@ -161,6 +161,7 @@ impl App {
 
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
+            Msg::None => {}
             Msg::ChooseMicrophone(mic) => {
                 if let BackendState::Loaded(b) = &mut self.backend {
                     b.pa_state.set_virtual_mic(&mic);
@@ -175,14 +176,12 @@ impl App {
                     return Task::done(Msg::SetMuted(a));
                 }
             }
-            Msg::ToggleActive => {
-                return Task::done(Msg::SetActive(!self.active));
-            }
+            Msg::ToggleActive => return Task::done(Msg::SetActive(!self.active)),
             Msg::SetMuted(m) => {
                 if let BackendState::Loaded(b) = &mut self.backend {
                     let res = b.pa_state.set_mute(self.active && m);
                     if let Err(e) = res {
-                        eprintln!("Failed to set mute: {}", e);
+                        eprintln!("Failed to set mute: {e}");
                     }
                     self.muted = self.active && m;
                 }
@@ -192,84 +191,88 @@ impl App {
                 self.backend = BackendState::Error(msg.into());
             }
             Msg::UpdateHotKeyDescriptions(descriptions) => self.hk_descriptions = descriptions,
-            Msg::ShowWindow => {
-                let size = match self.backend {
-                    BackendState::Loaded(_) => (600, 300),
-                    BackendState::Error(_) => (280, 180),
-                };
-                let task = iced::window::latest().then(move |res| {
-                    if let Some(id) = res {
-                        Task::batch([
-                            iced::window::request_user_attention(
-                                id,
-                                Some(UserAttention::Informational),
-                            ),
-                            iced::window::gain_focus(id),
-                        ])
-                    } else {
-                        iced::window::open(Settings {
-                            exit_on_close_request: false,
-                            size: size.into(),
-                            resizable: true,
-                            decorations: true,
-                            platform_specific: PlatformSpecific {
-                                application_id: APP_ID.to_string(),
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        })
-                        .1
-                        .discard()
-                    }
-                });
-
-                return task;
-            }
-            Msg::Close => {
-                let _ = Notification::new()
-                    .appname("Global Push-to-Talk")
-                    .summary("Global Push-to-Talk is running in the background")
-                    .show();
-                return iced::window::latest().and_then(iced::window::close);
-            }
-            Msg::Exit => {
-                if let BackendState::Loaded(b) = &mut self.backend {
-                    b.pa_state.remove_virtual_mic();
-                }
-                exit(0);
-            }
+            Msg::ShowWindow => return self.show_window(),
+            Msg::Close => return Self::close_window(),
+            Msg::Exit => self.exit(),
             Msg::SetTheme(theme) => self.theme = theme,
             Msg::InitChangeHotKeyTX(change_hotkey) => self.change_hotkey_tx = Some(change_hotkey),
             Msg::StartHotKeyRecording(recording) => self.recording_hotkey = Some(recording),
-            Msg::StopHotKeyRecording(hk_string) => {
-                let Some(recording_hotkey) = self.recording_hotkey.take() else {
-                    return Task::none();
-                };
-
-                let Ok(new_hk) = HotKey::from_str(&hk_string) else {
-                    return Task::none();
-                };
-
-                // get current hotkeys
-                let def = HotKeyConfig::default();
-                let mut hotkeys = HotKeyConfig {
-                    trigger: HotKey::from_str(&self.hk_descriptions.trigger).unwrap_or(def.trigger),
-                    toggle_active: HotKey::from_str(&self.hk_descriptions.toggle_active)
-                        .unwrap_or(def.toggle_active),
-                };
-
-                match recording_hotkey {
-                    HotKeyRecording::Trigger => hotkeys.trigger = new_hk,
-                    HotKeyRecording::ToggleActive => hotkeys.toggle_active = new_hk,
-                }
-
-                if let Some(tx) = self.change_hotkey_tx.clone() {
-                    return Task::future(async move { tx.send(hotkeys).await }).discard();
-                }
-            }
-            Msg::None => {}
-        };
+            Msg::StopHotKeyRecording(hk_string) => return self.finish_hotkey_recording(&hk_string),
+        }
         Task::none()
+    }
+
+    fn finish_hotkey_recording(&mut self, hk_string: &str) -> Task<Msg> {
+        let Some(recording_hotkey) = self.recording_hotkey.take() else {
+            return Task::none();
+        };
+
+        let Ok(new_hk) = HotKey::from_str(hk_string) else {
+            return Task::none();
+        };
+
+        // get current hotkeys
+        let def = HotKeyConfig::default();
+        let mut hotkeys = HotKeyConfig {
+            trigger: HotKey::from_str(&self.hk_descriptions.trigger).unwrap_or(def.trigger),
+            toggle_active: HotKey::from_str(&self.hk_descriptions.toggle_active)
+                .unwrap_or(def.toggle_active),
+        };
+
+        match recording_hotkey {
+            HotKeyRecording::Trigger => hotkeys.trigger = new_hk,
+            HotKeyRecording::ToggleActive => hotkeys.toggle_active = new_hk,
+        }
+
+        if let Some(tx) = self.change_hotkey_tx.clone() {
+            Task::future(async move { tx.send(hotkeys).await }).discard()
+        } else {
+            Task::none()
+        }
+    }
+
+    fn show_window(&mut self) -> Task<Msg> {
+        let size = match self.backend {
+            BackendState::Loaded(_) => (600, 300),
+            BackendState::Error(_) => (280, 180),
+        };
+        iced::window::latest().then(move |res| {
+            if let Some(id) = res {
+                Task::batch([
+                    iced::window::request_user_attention(id, Some(UserAttention::Informational)),
+                    iced::window::gain_focus(id),
+                ])
+            } else {
+                iced::window::open(Settings {
+                    exit_on_close_request: false,
+                    size: size.into(),
+                    resizable: true,
+                    decorations: true,
+                    platform_specific: PlatformSpecific {
+                        application_id: APP_ID.to_string(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .1
+                .discard()
+            }
+        })
+    }
+
+    fn close_window() -> Task<Msg> {
+        let _ = Notification::new()
+            .appname("Global Push-to-Talk")
+            .summary("Global Push-to-Talk is running in the background")
+            .show();
+        iced::window::latest().and_then(iced::window::close)
+    }
+
+    fn exit(&mut self) {
+        if let BackendState::Loaded(b) = &mut self.backend {
+            b.pa_state.remove_virtual_mic();
+        }
+        exit(0);
     }
 
     pub fn theme(&self, _: Id) -> Option<Theme> {
@@ -302,20 +305,19 @@ impl App {
     pub fn view(&self, _window: Id) -> Element<'_, Msg> {
         let backend = match &self.backend {
             BackendState::Loaded(backend) => backend,
-            BackendState::Error(e) => return Self::show_error(e.to_string()),
+            BackendState::Error(e) => return show_error(e.clone()),
         };
 
         if self.recording_hotkey.is_some() {
-            return self.recording_hotkey();
+            return recording_hotkey();
         }
 
         let title = title("Global Push-to-Talk");
         let sep = rule::horizontal(1.0);
 
-        let main = container(
-            column![self.toggle_active(backend), self.select_mic(backend),].spacing(SPACING),
-        )
-        .padding(PADDING);
+        let main =
+            container(column![self.toggle_active(backend), select_mic(backend),].spacing(SPACING))
+                .padding(PADDING);
 
         let footer = row![
             self.hotkey_indicator(),
@@ -330,37 +332,8 @@ impl App {
             .into()
     }
 
-    fn recording_hotkey(&self) -> Element<'_, Msg> {
-        let txt = text("Enter a key combination...");
-        let space1 = space().width(Length::Fill).height(Length::Fill);
-        let space2 = space().width(Length::Fill).height(Length::Fill);
-        column![space1, txt, space2]
-            .align_x(Horizontal::Center)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-    }
-
-    fn show_error<'a>(message: String) -> Element<'a, Msg> {
-        let title = title("Error");
-        let sep = rule::horizontal(1.0);
-        let message = text(message).wrapping(text::Wrapping::Word);
-
-        let close_btn = button("Close").on_press(Msg::Exit);
-        let close_btn = column![close_btn]
-            .align_x(Horizontal::Right)
-            .width(Length::Fill);
-
-        column![title, sep, message, space().height(Length::Fill), close_btn]
-            .spacing(SPACING)
-            .padding(PADDING)
-            .height(Length::Fill)
-            .width(Length::Fill)
-            .into()
-    }
-
     fn toggle_active(&self, backend: &Backend) -> Element<'_, Msg> {
-        if self.get_selected_mic(backend).is_none() {
+        if get_selected_mic(backend).is_none() {
             return row![
                 text("Select a microphone to enable push-to-talk")
                     .font(Font {
@@ -452,32 +425,61 @@ impl App {
             .into()
         }
     }
+}
 
-    fn select_mic(&self, backend: &Backend) -> Element<'_, Msg> {
-        let label = text("Microphone");
-        let input_devs = backend.pa_state.get_input_devices();
-        let selected = self.get_selected_mic(backend);
-        let pick_list = pick_list(input_devs, selected, |dev| Msg::ChooseMicrophone(dev.name))
-            .width(Length::Fill)
-            .placeholder("Choose Microphone...");
+fn get_selected_mic(backend: &Backend) -> Option<InputDevice> {
+    backend
+        .pa_state
+        .get_input_devices()
+        .iter()
+        .find(|dev| Some(dev.name.as_str()) == backend.pa_state.get_active_source_name())
+        .cloned()
+}
 
-        let refresh_btn = button("⟳").on_press(Msg::None);
+fn recording_hotkey<'a>() -> Element<'a, Msg> {
+    let txt = text("Enter a key combination...");
+    let space1 = space().width(Length::Fill).height(Length::Fill);
+    let space2 = space().width(Length::Fill).height(Length::Fill);
+    column![space1, txt, space2]
+        .align_x(Horizontal::Center)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
 
-        row![label, pick_list, refresh_btn]
-            .spacing(SPACING)
-            .width(Length::Fill)
-            .align_y(Vertical::Center)
-            .into()
-    }
+fn select_mic(backend: &Backend) -> Element<'_, Msg> {
+    let label = text("Microphone");
+    let input_devs = backend.pa_state.get_input_devices();
+    let selected = get_selected_mic(backend);
+    let pick_list = pick_list(input_devs, selected, |dev| Msg::ChooseMicrophone(dev.name))
+        .width(Length::Fill)
+        .placeholder("Choose Microphone...");
 
-    fn get_selected_mic(&self, backend: &Backend) -> Option<InputDevice> {
-        backend
-            .pa_state
-            .get_input_devices()
-            .iter()
-            .find(|dev| Some(dev.name.as_str()) == backend.pa_state.get_active_source_name())
-            .cloned()
-    }
+    let refresh_btn = button("⟳").on_press(Msg::None);
+
+    row![label, pick_list, refresh_btn]
+        .spacing(SPACING)
+        .width(Length::Fill)
+        .align_y(Vertical::Center)
+        .into()
+}
+
+fn show_error<'a>(message: String) -> Element<'a, Msg> {
+    let title = title("Error");
+    let sep = rule::horizontal(1.0);
+    let message = text(message).wrapping(text::Wrapping::Word);
+
+    let close_btn = button("Close").on_press(Msg::Exit);
+    let close_btn = column![close_btn]
+        .align_x(Horizontal::Right)
+        .width(Length::Fill);
+
+    column![title, sep, message, space().height(Length::Fill), close_btn]
+        .spacing(SPACING)
+        .padding(PADDING)
+        .height(Length::Fill)
+        .width(Length::Fill)
+        .into()
 }
 
 fn title<'a>(content: impl text::IntoFragment<'a>) -> Element<'a, Msg> {
@@ -518,7 +520,7 @@ fn hk_label<'a>(
         span(": "),
         span(description).font(bold_italic),
     ])
-    .on_link_click(move |_: ()| match recording.clone() {
+    .on_link_click(move |()| match recording.clone() {
         Some(recording) => Msg::StartHotKeyRecording(recording.clone()),
         None => Msg::None,
     })

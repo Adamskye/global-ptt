@@ -42,7 +42,7 @@ impl PulseAudioState {
         let mut proplist = Proplist::new().ok_or(Error::Other)?;
         proplist
             .set_str(properties::APPLICATION_NAME, "GlobalPushToTalk")
-            .map_err(|_| Error::Other)?;
+            .map_err(|()| Error::Other)?;
 
         let mainloop = Rc::new(RefCell::new(
             Mainloop::new().ok_or(Error::MainloopCreation)?,
@@ -108,8 +108,7 @@ impl PulseAudioState {
 
                     inner_introspect.unload_module(i.index, |_| {});
                 }
-                ListResult::End => {}
-                ListResult::Error => {}
+                ListResult::End | ListResult::Error => {}
             });
 
         // wait for unloading to finish
@@ -118,7 +117,7 @@ impl PulseAudioState {
                 IterateResult::Quit(_) | IterateResult::Err(_) => {
                     return;
                 }
-                _ => {}
+                IterateResult::Success(_) => {}
             }
             if delete_op.get_state() == operation::State::Done {
                 break;
@@ -145,7 +144,7 @@ impl PulseAudioState {
                 IterateResult::Quit(_) | IterateResult::Err(_) => {
                     return;
                 }
-                _ => {}
+                IterateResult::Success(_) => {}
             }
             if create_op.get_state() != operation::State::Running {
                 let _ = self.set_mute(true);
@@ -172,7 +171,7 @@ impl PulseAudioState {
                 IterateResult::Quit(_) | IterateResult::Err(_) => {
                     return Err(Error::MainloopTick);
                 }
-                _ => {}
+                IterateResult::Success(_) => {}
             }
             if op.get_state() != operation::State::Running {
                 return Ok(());
@@ -197,7 +196,7 @@ impl PulseAudioState {
                         description: i
                             .description
                             .as_deref()
-                            .map(|s| s.to_string())
+                            .map(ToString::to_string)
                             .unwrap_or(name.to_string()),
                     });
                 }

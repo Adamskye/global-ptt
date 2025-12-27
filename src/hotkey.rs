@@ -16,6 +16,7 @@ use crate::{APP_ID, app::Msg, config::Config};
 const WL_TRIGGER_ID: u32 = 0;
 const WL_TOGGLE_ACTIVE_ID: u32 = 1;
 
+// used to store any data corresponding to each type of hotkey
 #[derive(Debug, Clone)]
 pub struct HotKeyConfig<T> {
     pub trigger: T,
@@ -34,42 +35,29 @@ impl Default for HotKeyConfig<HotKey> {
 impl Default for HotKeyConfig<String> {
     fn default() -> Self {
         Self {
-            trigger: Default::default(),
-            toggle_active: Default::default(),
+            trigger: String::default(),
+            toggle_active: String::default(),
         }
     }
 }
 
-async fn hotkeys_wl(mut tx: Sender<Msg>) {
-    let Ok(gh) = GlobalHotKeyManager::new() else {
-        let _ = tx.send(Msg::GlobalShortcutsFail).await;
-        return;
-    };
+async fn hotkeys_wl(gh: GlobalHotKeyManager, tx: Sender<Msg>) -> anyhow::Result<()> {
+    let trigger_hk = WlNewHotKeyAction::new(
+        WL_TRIGGER_ID,
+        "Push-to-talk trigger/unmute microphone",
+        Some(HotKey::new(None, Code::Insert)),
+    );
 
-    if gh
-        .wl_register_all(
-            APP_ID,
-            &[
-                WlNewHotKeyAction::new(
-                    WL_TRIGGER_ID,
-                    "Push-to-talk trigger/unmute microphone",
-                    Some(HotKey::new(None, Code::Insert)),
-                ),
-                WlNewHotKeyAction::new(
-                    WL_TOGGLE_ACTIVE_ID,
-                    "Enable/disable push-to-talk",
-                    Some(HotKey::new(
-                        Some(Modifiers::CONTROL | Modifiers::SUPER),
-                        Code::KeyP,
-                    )),
-                ),
-            ],
-        )
-        .is_err()
-    {
-        let _ = tx.send(Msg::GlobalShortcutsFail).await;
-        return;
-    }
+    let toggle_active_hk = WlNewHotKeyAction::new(
+        WL_TOGGLE_ACTIVE_ID,
+        "Enable/disable push-to-talk",
+        Some(HotKey::new(
+            Some(Modifiers::CONTROL | Modifiers::SUPER),
+            Code::KeyP,
+        )),
+    );
+
+    gh.wl_register_all(APP_ID, &[trigger_hk, toggle_active_hk])?;
 
     // react to user changing the hotkeys
     let mut msg_tx = tx.clone();
@@ -108,33 +96,29 @@ async fn hotkeys_wl(mut tx: Sender<Msg>) {
         toggle_active: WL_TOGGLE_ACTIVE_ID,
     };
     while let Ok(Ok(event)) = tokio::task::spawn_blocking(|| hk_event_rx.recv()).await {
-        handle_hotkey_press(tx.clone(), event, hotkey_ids.clone()).await;
+        handle_hotkey_press(tx.clone(), event, &hotkey_ids);
     }
+
+    Ok(())
 }
 
-async fn hotkeys_non_wl(mut tx: Sender<Msg>) {
-    let Ok(gh) = GlobalHotKeyManager::new() else {
-        let _ = tx.send(Msg::GlobalShortcutsFail).await;
-        return;
-    };
-
-    let mut config = Config::load().unwrap_or_default();
+async fn hotkeys_non_wl(gh: GlobalHotKeyManager, mut tx: Sender<Msg>) -> anyhow::Result<()> {
+    // channel for UI to send hotkey updates through
     let (change_hotkey_tx, mut change_hotkey_rx) = mpsc::channel(10);
     let _ = tx.send(Msg::InitChangeHotKeyTX(change_hotkey_tx)).await;
 
-    // create our hotkeys
-    let hotkeys = config.hotkeys();
-
-    let hotkeys = Arc::new(Mutex::new(hotkeys));
+    // load our hotkeys
+    let config_outer = Arc::new(Mutex::new(Config::load().unwrap_or_default()));
 
     // handle hotkey changes from UI
     let mut msg_tx = tx.clone();
-    let hotkeys_inner = hotkeys.clone();
+    let config = config_outer.clone();
     tokio::spawn(async move {
         loop {
             // set up hotkeys
             {
-                let hks = hotkeys_inner.lock().await;
+                let mut config = config.lock().await;
+                let hks = config.hotkeys();
 
                 // register the hotkeys
                 let _ = gh.register(hks.trigger);
@@ -155,11 +139,12 @@ async fn hotkeys_non_wl(mut tx: Sender<Msg>) {
             // update hotkeys whenever one is changed
             if let Some(change) = change_hotkey_rx.recv().await {
                 // unregister old hotkeys
-                let mut hks = hotkeys_inner.lock().await;
+                let mut config = config.lock().await;
+                let hks = config.hotkeys();
                 let _ = gh.unregister(hks.trigger);
                 let _ = gh.unregister(hks.toggle_active);
 
-                *hks = change;
+                config.store_hotkeys(&change);
             } else {
                 return;
             }
@@ -169,22 +154,21 @@ async fn hotkeys_non_wl(mut tx: Sender<Msg>) {
     // handle hotkey events
     let hk_event_rx = GlobalHotKeyEvent::receiver();
     while let Ok(Ok(event)) = tokio::task::spawn_blocking(|| hk_event_rx.recv()).await {
-        let hotkey_ids = {
-            let hk = hotkeys.lock().await;
-            HotKeyConfig {
-                trigger: hk.trigger.id(),
-                toggle_active: hk.toggle_active.id(),
-            }
+        let config = config_outer.lock().await;
+        let hks = config.hotkeys();
+        let ids = HotKeyConfig {
+            trigger: hks.trigger.id(),
+            toggle_active: hks.toggle_active.id(),
         };
-
-        handle_hotkey_press(tx.clone(), event, hotkey_ids).await;
+        handle_hotkey_press(tx.clone(), event, &ids);
     }
+    Ok(())
 }
 
-async fn handle_hotkey_press(
+fn handle_hotkey_press(
     mut tx: Sender<Msg>,
     event: GlobalHotKeyEvent,
-    hotkey_ids: HotKeyConfig<u32>,
+    hotkey_ids: &HotKeyConfig<u32>,
 ) {
     let id = event.id();
     let _ = tx
@@ -199,11 +183,20 @@ async fn handle_hotkey_press(
 }
 
 pub fn hotkeys() -> impl Stream<Item = Msg> {
-    stream::channel(100, async |tx| {
-        if using_wayland() {
-            hotkeys_wl(tx).await;
-        } else {
-            hotkeys_non_wl(tx).await;
+    stream::channel(100, async |mut tx| {
+        let Ok(gh) = GlobalHotKeyManager::new() else {
+            let _ = tx.send(Msg::GlobalShortcutsFail).await;
+            return;
         };
+
+        let res = if using_wayland() {
+            hotkeys_wl(gh, tx.clone()).await
+        } else {
+            hotkeys_non_wl(gh, tx.clone()).await
+        };
+
+        if res.is_err() {
+            let _ = tx.send(Msg::GlobalShortcutsFail).await;
+        }
     })
 }
