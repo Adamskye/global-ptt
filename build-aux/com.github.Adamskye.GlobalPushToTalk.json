@@ -32,7 +32,7 @@
                 "cargo --offline fetch --manifest-path Cargo.toml --verbose",
                 "cargo --offline build --release --verbose",
                 "install -Dm755 ./target/release/global-ptt -t /app/bin/",
-                "install -Dm644 ./dist/${FLATPAK_ID}.desktop -t /app/share/applications/"
+                "install -Dm644 ./build-aux/${FLATPAK_ID}.desktop -t /app/share/applications/"
             ],
             "sources": [
                 {

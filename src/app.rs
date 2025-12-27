@@ -8,7 +8,10 @@ use iced::{
     font::{Style, Weight},
     futures::StreamExt,
     keyboard,
-    widget::{button, checkbox, column, container, pick_list, row, rule, space, text, tooltip},
+    widget::{
+        button, checkbox, column, container, pick_list, rich_text, row, rule, space, span, text,
+        tooltip,
+    },
     window::{Id, Settings, UserAttention, close_requests, settings::PlatformSpecific},
 };
 use iced_fonts::lucide;
@@ -20,7 +23,7 @@ use tokio_stream::wrappers::UnixListenerStream;
 
 use crate::{
     APP_ID, PADDING, SPACING,
-    hotkey::hotkeys,
+    hotkey::{HotKeyConfig, hotkeys},
     pulse::{InputDevice, PulseAudioState, VIRTUALMIC_DESCRIPTION},
     tray::Tray,
 };
@@ -32,15 +35,21 @@ pub enum Msg {
     SetActive(bool),
     ToggleActive,
     SetMuted(bool),
-    SetHotKeyDescription(String),
+    UpdateHotKeyDescriptions(HotKeyConfig<String>),
     ShowWindow,
     Close,
     Exit,
     SetTheme(Option<Theme>),
-    InitChangeHotKeySender(Sender<HotKey>),
-    StartHotKeyRecording,
+    InitChangeHotKeyTX(Sender<HotKeyConfig<HotKey>>),
+    StartHotKeyRecording(HotKeyRecording),
     StopHotKeyRecording(String),
     None,
+}
+
+#[derive(Debug, Clone)]
+pub enum HotKeyRecording {
+    Trigger,
+    ToggleActive,
 }
 
 #[derive(Clone)]
@@ -59,11 +68,11 @@ enum BackendState {
 pub struct App {
     active: bool,
     muted: bool,
-    hotkey_description: String,
+    hk_descriptions: HotKeyConfig<String>,
     backend: BackendState,
     theme: Option<Theme>,
-    change_hotkey_tx: Option<Sender<HotKey>>,
-    recording_hotkey: bool,
+    change_hotkey_tx: Option<Sender<HotKeyConfig<HotKey>>>,
+    recording_hotkey: Option<HotKeyRecording>,
 }
 
 impl App {
@@ -119,11 +128,11 @@ impl App {
         let this = Self {
             muted: false,
             active: false,
-            hotkey_description: "".into(),
+            hk_descriptions: Default::default(),
             theme: None,
             backend,
             change_hotkey_tx: None,
-            recording_hotkey: false,
+            recording_hotkey: None,
         };
 
         // handling signals
@@ -182,7 +191,7 @@ impl App {
                 let msg = "Failed to load global shortcuts. Push-to-talk will not work. Make sure you are using a Wayland compositor with a portal implementation that supports global shortcuts.";
                 self.backend = BackendState::Error(msg.into());
             }
-            Msg::SetHotKeyDescription(desc) => self.hotkey_description = desc,
+            Msg::UpdateHotKeyDescriptions(descriptions) => self.hk_descriptions = descriptions,
             Msg::ShowWindow => {
                 let size = match self.backend {
                     BackendState::Loaded(_) => (600, 300),
@@ -230,18 +239,33 @@ impl App {
                 exit(0);
             }
             Msg::SetTheme(theme) => self.theme = theme,
-            Msg::InitChangeHotKeySender(change_hotkey) => {
-                self.change_hotkey_tx = Some(change_hotkey)
-            }
-            Msg::StartHotKeyRecording => {
-                self.recording_hotkey = true;
-            }
+            Msg::InitChangeHotKeyTX(change_hotkey) => self.change_hotkey_tx = Some(change_hotkey),
+            Msg::StartHotKeyRecording(recording) => self.recording_hotkey = Some(recording),
             Msg::StopHotKeyRecording(hk_string) => {
-                self.recording_hotkey = false;
-                if let (Some(tx), Ok(hk)) =
-                    (self.change_hotkey_tx.clone(), HotKey::from_str(&hk_string))
-                {
-                    return Task::future(async move { tx.send(hk).await }).discard();
+                let Some(recording_hotkey) = &self.recording_hotkey else {
+                    return Task::none();
+                };
+
+                let Ok(new_hk) = HotKey::from_str(&hk_string) else {
+                    return Task::none();
+                };
+
+                // get current hotkeys
+                let def = HotKeyConfig::default();
+                let mut hotkeys = HotKeyConfig {
+                    trigger: HotKey::from_str(&self.hk_descriptions.trigger).unwrap_or(def.trigger),
+                    toggle_active: HotKey::from_str(&self.hk_descriptions.toggle_active)
+                        .unwrap_or(def.toggle_active),
+                };
+
+                match recording_hotkey {
+                    HotKeyRecording::Trigger => hotkeys.trigger = new_hk,
+                    HotKeyRecording::ToggleActive => hotkeys.toggle_active = new_hk,
+                }
+
+                self.recording_hotkey = None;
+                if let Some(tx) = self.change_hotkey_tx.clone() {
+                    return Task::future(async move { tx.send(hotkeys).await }).discard();
                 }
             }
             Msg::None => {}
@@ -257,7 +281,7 @@ impl App {
         Subscription::batch([
             close_requests().map(|_| Msg::Close),
             Subscription::run(hotkeys),
-            if self.recording_hotkey {
+            if self.recording_hotkey.is_some() {
                 keyboard::listen().map(|k_ev| match k_ev {
                     keyboard::Event::KeyPressed { key, .. } => {
                         let key_str = match key {
@@ -282,7 +306,7 @@ impl App {
             BackendState::Error(e) => return Self::show_error(e.to_string()),
         };
 
-        if self.recording_hotkey {
+        if self.recording_hotkey.is_some() {
             return self.recording_hotkey();
         }
 
@@ -390,28 +414,43 @@ impl App {
     }
 
     fn hotkey_indicator(&self) -> Element<'_, Msg> {
-        let italic = Font {
-            style: Style::Italic,
-            ..Default::default()
-        };
-        if using_wayland() {
+        if !using_wayland() {
+            let trigger_label = hk_label("Trigger", &self.hk_descriptions.trigger, None);
+            let toggle_active_label =
+                hk_label("Enable/Disable", &self.hk_descriptions.toggle_active, None);
+
+            let all = row![trigger_label, toggle_active_label]
+                .spacing(SPACING)
+                .align_y(Vertical::Center);
+
             tooltip(
-                text(format!("Hotkey(s): {}", self.hotkey_description))
-                    .style(weak_text_style)
-                    .font(italic),
-                text("Configure these hotkeys in your system's settings")
-                    .style(weak_text_style)
-                    .font(italic),
+                all,
+                "Configure these hotkeys in your system's settings",
                 tooltip::Position::Top,
             )
             .into()
         } else {
-            let record_btn = button("Change").on_press(Msg::StartHotKeyRecording);
-            let txt = text(format!("Hotkey: {}", self.hotkey_description));
-            row![txt, record_btn]
+            let trigger_label = hk_label(
+                "Trigger",
+                &self.hk_descriptions.trigger,
+                Some(HotKeyRecording::Trigger),
+            );
+            let toggle_active_label = hk_label(
+                "Enable/Disable",
+                &self.hk_descriptions.toggle_active,
+                Some(HotKeyRecording::ToggleActive),
+            );
+
+            let all = row![trigger_label, toggle_active_label]
                 .spacing(SPACING)
-                .align_y(Vertical::Center)
-                .into()
+                .align_y(Vertical::Center);
+
+            tooltip(
+                all,
+                "Click on any hotkey to change it...",
+                tooltip::Position::Top,
+            )
+            .into()
         }
     }
 
@@ -457,4 +496,34 @@ fn title<'a>(content: impl text::IntoFragment<'a>) -> Element<'a, Msg> {
 fn weak_text_style(theme: &Theme) -> text::Style {
     let color = theme.extended_palette().secondary.strong.color;
     text::Style { color: Some(color) }
+}
+
+fn hk_label<'a>(
+    name: &'a str,
+    description: &'a str,
+    recording: Option<HotKeyRecording>,
+) -> Element<'a, Msg> {
+    let italic = Font {
+        style: Style::Italic,
+        ..Default::default()
+    };
+    let bold_italic = Font {
+        weight: Weight::Bold,
+        style: Style::Italic,
+        ..Default::default()
+    };
+
+    let link = recording.as_ref().map(|_| ());
+    rich_text([
+        span(name).link_maybe(link),
+        span(": "),
+        span(description).font(bold_italic),
+    ])
+    .on_link_click(move |_: ()| match recording.clone() {
+        Some(recording) => Msg::StartHotKeyRecording(recording.clone()),
+        None => Msg::None,
+    })
+    .font(italic)
+    .style(weak_text_style)
+    .into()
 }
