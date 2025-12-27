@@ -242,7 +242,7 @@ impl App {
             Msg::InitChangeHotKeyTX(change_hotkey) => self.change_hotkey_tx = Some(change_hotkey),
             Msg::StartHotKeyRecording(recording) => self.recording_hotkey = Some(recording),
             Msg::StopHotKeyRecording(hk_string) => {
-                let Some(recording_hotkey) = &self.recording_hotkey else {
+                let Some(recording_hotkey) = self.recording_hotkey.take() else {
                     return Task::none();
                 };
 
@@ -263,7 +263,6 @@ impl App {
                     HotKeyRecording::ToggleActive => hotkeys.toggle_active = new_hk,
                 }
 
-                self.recording_hotkey = None;
                 if let Some(tx) = self.change_hotkey_tx.clone() {
                     return Task::future(async move { tx.send(hotkeys).await }).discard();
                 }

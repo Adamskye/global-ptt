@@ -119,15 +119,11 @@ async fn hotkeys_non_wl(mut tx: Sender<Msg>) {
     };
 
     let mut config = Config::load().unwrap_or_default();
-    let (config_change_tx, mut config_change_rx) = mpsc::channel(10);
-    let _ = tx.send(Msg::InitChangeHotKeyTX(config_change_tx)).await;
+    let (change_hotkey_tx, mut change_hotkey_rx) = mpsc::channel(10);
+    let _ = tx.send(Msg::InitChangeHotKeyTX(change_hotkey_tx)).await;
 
     // create our hotkeys
     let hotkeys = config.hotkeys();
-
-    // register the hotkeys
-    let _ = gh.register(hotkeys.trigger);
-    let _ = gh.register(hotkeys.toggle_active);
 
     let hotkeys = Arc::new(Mutex::new(hotkeys));
 
@@ -136,9 +132,13 @@ async fn hotkeys_non_wl(mut tx: Sender<Msg>) {
     let hotkeys_inner = hotkeys.clone();
     tokio::spawn(async move {
         loop {
-            // set hotkey descriptions
+            // set up hotkeys
             {
                 let hks = hotkeys_inner.lock().await;
+
+                // register the hotkeys
+                let _ = gh.register(hks.trigger);
+                let _ = gh.register(hks.toggle_active);
                 let _ = msg_tx
                     .send(Msg::UpdateHotKeyDescriptions(HotKeyConfig {
                         trigger: hks.trigger.into_string(),
@@ -151,7 +151,12 @@ async fn hotkeys_non_wl(mut tx: Sender<Msg>) {
             }
 
             // update hotkeys whenever one is changed
-            if let Some(change) = config_change_rx.recv().await {
+            if let Some(change) = change_hotkey_rx.recv().await {
+                // unregister old hotkeys
+                let hks = hotkeys_inner.lock().await;
+                let _ = gh.unregister(hks.trigger);
+                let _ = gh.unregister(hks.toggle_active);
+
                 *hotkeys_inner.lock().await = change;
             } else {
                 return;
