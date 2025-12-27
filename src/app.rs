@@ -414,7 +414,7 @@ impl App {
     }
 
     fn hotkey_indicator(&self) -> Element<'_, Msg> {
-        if !using_wayland() {
+        if using_wayland() {
             let trigger_label = hk_label("Trigger", &self.hk_descriptions.trigger, None);
             let toggle_active_label =
                 hk_label("Enable/Disable", &self.hk_descriptions.toggle_active, None);
