@@ -118,7 +118,6 @@ async fn hotkeys_non_wl(mut tx: Sender<Msg>) {
         return;
     };
 
-    // if not using Wayland, load hotkeys from config file
     let mut config = Config::load().unwrap_or_default();
     let (config_change_tx, mut config_change_rx) = mpsc::channel(10);
     let _ = tx.send(Msg::InitChangeHotKeyTX(config_change_tx)).await;
@@ -163,9 +162,12 @@ async fn hotkeys_non_wl(mut tx: Sender<Msg>) {
     // handle hotkey events
     let hk_event_rx = GlobalHotKeyEvent::receiver();
     while let Ok(Ok(event)) = tokio::task::spawn_blocking(|| hk_event_rx.recv()).await {
-        let hotkey_ids = HotKeyConfig {
-            trigger: hotkeys.lock().await.trigger.id(),
-            toggle_active: hotkeys.lock().await.toggle_active.id(),
+        let hotkey_ids = {
+            let hk = hotkeys.lock().await;
+            HotKeyConfig {
+                trigger: hk.trigger.id(),
+                toggle_active: hk.toggle_active.id(),
+            }
         };
 
         handle_hotkey_press(tx.clone(), event, hotkey_ids).await;
