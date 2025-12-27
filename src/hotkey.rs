@@ -139,6 +139,8 @@ async fn hotkeys_non_wl(mut tx: Sender<Msg>) {
                 // register the hotkeys
                 let _ = gh.register(hks.trigger);
                 let _ = gh.register(hks.toggle_active);
+
+                // update description in UI
                 let _ = msg_tx
                     .send(Msg::UpdateHotKeyDescriptions(HotKeyConfig {
                         trigger: hks.trigger.into_string(),
@@ -153,11 +155,11 @@ async fn hotkeys_non_wl(mut tx: Sender<Msg>) {
             // update hotkeys whenever one is changed
             if let Some(change) = change_hotkey_rx.recv().await {
                 // unregister old hotkeys
-                let hks = hotkeys_inner.lock().await;
+                let mut hks = hotkeys_inner.lock().await;
                 let _ = gh.unregister(hks.trigger);
                 let _ = gh.unregister(hks.toggle_active);
 
-                *hotkeys_inner.lock().await = change;
+                *hks = change;
             } else {
                 return;
             }
