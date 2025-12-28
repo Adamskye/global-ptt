@@ -174,9 +174,7 @@ impl App {
             Msg::InitChangeHotKeyTX(change_hotkey) => self.change_hotkey_tx = Some(change_hotkey),
             Msg::StartHotKeyRecording(recording) => self.recording_hotkey = Some(recording),
             Msg::FinishHotKeyRecording(hk_string) => {
-                println!("hk_string: {hk_string}");
-                // return Task::none();
-                return self.finish_hotkey_recording(hk_string);
+                return self.finish_hotkey_recording(&hk_string);
             }
         }
         Task::none()
@@ -228,12 +226,12 @@ impl App {
         }
     }
 
-    fn finish_hotkey_recording(&mut self, hk_string: String) -> Task<Msg> {
+    fn finish_hotkey_recording(&mut self, hk_string: &str) -> Task<Msg> {
         let Some(recording_hotkey) = self.recording_hotkey.take() else {
             return Task::none();
         };
 
-        let Ok(new_hk) = HotKey::from_str(&hk_string) else {
+        let Ok(new_hk) = HotKey::from_str(hk_string) else {
             return Task::none();
         };
 
@@ -322,7 +320,7 @@ impl App {
             match key {
                 keyboard::Key::Named(named) => format!("{named:?}"),
                 keyboard::Key::Character(c) => c.into(),
-                keyboard::Key::Unidentified => "".into(),
+                keyboard::Key::Unidentified => String::new(),
             }
         }
 
@@ -341,28 +339,25 @@ impl App {
             if modifiers.logo() {
                 s.push("SUPER");
             }
-            return s.join("+");
+            s.join("+")
         }
 
+        use iced::keyboard::key::Named as N;
+        use keyboard::Key::Named;
         keyboard::listen().map(|k_ev| match k_ev {
             keyboard::Event::KeyReleased { key, modifiers, .. } => {
                 // rule: if the key released is a modifier key, then finish
-                use iced::keyboard::key::Named as N;
-                use keyboard::Key::Named;
                 match key {
-                    Named(N::Control) | Named(N::Alt) | Named(N::AltGraph) | Named(N::Shift)
-                    | Named(N::Super) => Msg::FinishHotKeyRecording(mod_to_str(modifiers)),
+                    Named(N::Control | N::Alt | N::AltGraph | N::Shift | N::Super) => {
+                        Msg::FinishHotKeyRecording(mod_to_str(modifiers))
+                    }
                     _ => Msg::None,
                 }
             }
             keyboard::Event::KeyPressed { key, modifiers, .. } => {
                 // rule: if the key pressed is not a modifier key, then finish
-                use iced::keyboard::key::Named as N;
-                use keyboard::Key::Named;
-
                 match key {
-                    Named(N::Control) | Named(N::Alt) | Named(N::AltGraph) | Named(N::Shift)
-                    | Named(N::Super) => Msg::None,
+                    Named(N::Control | N::Alt | N::AltGraph | N::Shift | N::Super) => Msg::None,
                     _ => {
                         if modifiers.is_empty() {
                             Msg::FinishHotKeyRecording(key_to_str(key))
@@ -374,7 +369,7 @@ impl App {
                     }
                 }
             }
-            _ => Msg::None,
+            keyboard::Event::ModifiersChanged(_) => Msg::None,
         })
     }
 
@@ -480,11 +475,13 @@ impl App {
             .into()
         } else {
             let d = &self.hk_descriptions;
-            use HotKeyAction as HKR;
 
-            let trigger_label = hk_label("Trigger", &d.trigger, Some(HKR::Trigger));
-            let toggle_active_label =
-                hk_label("Enable/Disable", &d.toggle_active, Some(HKR::ToggleActive));
+            let trigger_label = hk_label("Trigger", &d.trigger, Some(HotKeyAction::Trigger));
+            let toggle_active_label = hk_label(
+                "Enable/Disable",
+                &d.toggle_active,
+                Some(HotKeyAction::ToggleActive),
+            );
 
             let all = row![trigger_label, toggle_active_label]
                 .spacing(SPACING)
