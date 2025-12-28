@@ -7,7 +7,7 @@ use iced::{
     alignment::{Horizontal, Vertical},
     font::{Style, Weight},
     futures::StreamExt,
-    keyboard,
+    keyboard::{self, Key, Modifiers},
     widget::{
         button, checkbox, column, container, pick_list, rich_text, row, rule, space, span, text,
         tooltip,
@@ -41,13 +41,13 @@ pub enum Msg {
     Exit,
     SetTheme(Option<Theme>),
     InitChangeHotKeyTX(Sender<HotKeyConfig<HotKey>>),
-    StartHotKeyRecording(HotKeyRecording),
-    StopHotKeyRecording(String),
+    StartHotKeyRecording(HotKeyAction),
+    FinishHotKeyRecording(String),
     None,
 }
 
 #[derive(Debug, Clone)]
-pub enum HotKeyRecording {
+pub enum HotKeyAction {
     Trigger,
     ToggleActive,
 }
@@ -72,7 +72,7 @@ pub struct App {
     backend: BackendState,
     theme: Option<Theme>,
     change_hotkey_tx: Option<Sender<HotKeyConfig<HotKey>>>,
-    recording_hotkey: Option<HotKeyRecording>,
+    recording_hotkey: Option<HotKeyAction>,
 }
 
 impl App {
@@ -162,29 +162,10 @@ impl App {
         match msg {
             Msg::None => {}
             Msg::ChooseMicrophone(mic) => return self.choose_microphone(&mic),
-            Msg::SetActive(a) => {
-                if let BackendState::Loaded(b) = &mut self.backend {
-                    self.active = a;
-                    if let Some(tray) = &b.tray {
-                        block_on(tray.update(|tray| tray.set_ptt_enabled(a)));
-                    }
-                    return Task::done(Msg::SetMuted(a));
-                }
-            }
+            Msg::SetActive(a) => return self.set_active(a),
             Msg::ToggleActive => return Task::done(Msg::SetActive(!self.active)),
-            Msg::SetMuted(m) => {
-                if let BackendState::Loaded(b) = &mut self.backend {
-                    let res = b.pa_state.set_mute(self.active && m);
-                    if let Err(e) = res {
-                        eprintln!("Failed to set mute: {e}");
-                    }
-                    self.muted = self.active && m;
-                }
-            }
-            Msg::GlobalShortcutsFail => {
-                let msg = "Failed to load global shortcuts. Push-to-talk will not work. Make sure you are using a Wayland compositor with a portal implementation that supports global shortcuts.";
-                self.backend = BackendState::Error(msg.into());
-            }
+            Msg::SetMuted(m) => self.set_muted(m),
+            Msg::GlobalShortcutsFail => self.global_shortcuts_fail(),
             Msg::UpdateHotKeyDescriptions(descriptions) => self.hk_descriptions = descriptions,
             Msg::ShowWindow => return self.show_window(),
             Msg::Close => return Self::close_window(),
@@ -192,33 +173,67 @@ impl App {
             Msg::SetTheme(theme) => self.theme = theme,
             Msg::InitChangeHotKeyTX(change_hotkey) => self.change_hotkey_tx = Some(change_hotkey),
             Msg::StartHotKeyRecording(recording) => self.recording_hotkey = Some(recording),
-            Msg::StopHotKeyRecording(hk_string) => return self.finish_hotkey_recording(&hk_string),
+            Msg::FinishHotKeyRecording(hk_string) => {
+                println!("hk_string: {hk_string}");
+                // return Task::none();
+                return self.finish_hotkey_recording(hk_string);
+            }
         }
         Task::none()
     }
 
-    fn choose_microphone(&mut self, mic: &str) -> Task<Msg> {
-        if let BackendState::Loaded(b) = &mut self.backend {
-            let is_first_time = b.pa_state.get_active_source_name().is_none();
-            b.pa_state.set_virtual_mic(mic);
+    fn global_shortcuts_fail(&mut self) {
+        let msg = "Failed to load global shortcuts. Push-to-talk will not work. Make sure you are using a Wayland compositor with a portal implementation that supports global shortcuts.";
+        self.backend = BackendState::Error(msg.into());
+    }
 
-            // enable ptt automatically after choosing microphone for the first time
-            if is_first_time {
-                Task::done(Msg::SetActive(true))
-            } else {
-                Task::none()
-            }
+    fn set_muted(&mut self, muted: bool) {
+        let BackendState::Loaded(b) = &mut self.backend else {
+            return;
+        };
+
+        let res = b.pa_state.set_mute(self.active && muted);
+        if let Err(e) = res {
+            eprintln!("Failed to set mute: {e}");
+        }
+        self.muted = self.active && muted;
+    }
+
+    fn set_active(&mut self, active: bool) -> Task<Msg> {
+        let BackendState::Loaded(b) = &mut self.backend else {
+            return Task::none();
+        };
+
+        self.active = active;
+        if let Some(tray) = &b.tray {
+            block_on(tray.update(|tray| tray.set_ptt_enabled(active)));
+        }
+
+        Task::done(Msg::SetMuted(active))
+    }
+
+    fn choose_microphone(&mut self, mic: &str) -> Task<Msg> {
+        let BackendState::Loaded(b) = &mut self.backend else {
+            return Task::none();
+        };
+
+        let is_first_time = b.pa_state.get_active_source_name().is_none();
+        b.pa_state.set_virtual_mic(mic);
+
+        // enable ptt automatically after choosing microphone for the first time
+        if is_first_time {
+            Task::done(Msg::SetActive(true))
         } else {
             Task::none()
         }
     }
 
-    fn finish_hotkey_recording(&mut self, hk_string: &str) -> Task<Msg> {
+    fn finish_hotkey_recording(&mut self, hk_string: String) -> Task<Msg> {
         let Some(recording_hotkey) = self.recording_hotkey.take() else {
             return Task::none();
         };
 
-        let Ok(new_hk) = HotKey::from_str(hk_string) else {
+        let Ok(new_hk) = HotKey::from_str(&hk_string) else {
             return Task::none();
         };
 
@@ -231,8 +246,8 @@ impl App {
         };
 
         match recording_hotkey {
-            HotKeyRecording::Trigger => hotkeys.trigger = new_hk,
-            HotKeyRecording::ToggleActive => hotkeys.toggle_active = new_hk,
+            HotKeyAction::Trigger => hotkeys.trigger = new_hk,
+            HotKeyAction::ToggleActive => hotkeys.toggle_active = new_hk,
         }
 
         if let Some(tx) = self.change_hotkey_tx.clone() {
@@ -295,22 +310,72 @@ impl App {
             close_requests().map(|_| Msg::Close),
             Subscription::run(hotkeys),
             if self.recording_hotkey.is_some() {
-                keyboard::listen().map(|k_ev| match k_ev {
-                    keyboard::Event::KeyPressed { key, .. } => {
-                        let key_str = match key {
-                            keyboard::Key::Named(named) => format!("{named:?}"),
-                            keyboard::Key::Character(c) => c.into(),
-                            keyboard::Key::Unidentified => return Msg::None,
-                        };
-
-                        Msg::StopHotKeyRecording(key_str)
-                    }
-                    _ => Msg::None,
-                })
+                Self::record_hotkey()
             } else {
                 Subscription::none()
             },
         ])
+    }
+
+    fn record_hotkey() -> Subscription<Msg> {
+        fn key_to_str(key: Key) -> String {
+            match key {
+                keyboard::Key::Named(named) => format!("{named:?}"),
+                keyboard::Key::Character(c) => c.into(),
+                keyboard::Key::Unidentified => "".into(),
+            }
+        }
+
+        fn mod_to_str(modifiers: Modifiers) -> String {
+            // otherwise, finish recording
+            let mut s = Vec::with_capacity(4);
+            if modifiers.control() {
+                s.push("CTRL");
+            }
+            if modifiers.shift() {
+                s.push("SHIFT");
+            }
+            if modifiers.alt() {
+                s.push("ALT");
+            }
+            if modifiers.logo() {
+                s.push("SUPER");
+            }
+            return s.join("+");
+        }
+
+        keyboard::listen().map(|k_ev| match k_ev {
+            keyboard::Event::KeyReleased { key, modifiers, .. } => {
+                // rule: if the key released is a modifier key, then finish
+                use iced::keyboard::key::Named as N;
+                use keyboard::Key::Named;
+                match key {
+                    Named(N::Control) | Named(N::Alt) | Named(N::AltGraph) | Named(N::Shift)
+                    | Named(N::Super) => Msg::FinishHotKeyRecording(mod_to_str(modifiers)),
+                    _ => Msg::None,
+                }
+            }
+            keyboard::Event::KeyPressed { key, modifiers, .. } => {
+                // rule: if the key pressed is not a modifier key, then finish
+                use iced::keyboard::key::Named as N;
+                use keyboard::Key::Named;
+
+                match key {
+                    Named(N::Control) | Named(N::Alt) | Named(N::AltGraph) | Named(N::Shift)
+                    | Named(N::Super) => Msg::None,
+                    _ => {
+                        if modifiers.is_empty() {
+                            Msg::FinishHotKeyRecording(key_to_str(key))
+                        } else {
+                            Msg::FinishHotKeyRecording(
+                                [mod_to_str(modifiers), key_to_str(key)].join("+"),
+                            )
+                        }
+                    }
+                }
+            }
+            _ => Msg::None,
+        })
     }
 
     pub fn view(&self, _window: Id) -> Element<'_, Msg> {
@@ -326,9 +391,10 @@ impl App {
         let title = title("Global Push-to-Talk");
         let sep = rule::horizontal(1.0);
 
-        let main =
-            container(column![self.toggle_active(backend), select_mic(backend),].spacing(SPACING))
-                .padding(PADDING);
+        let main = container(
+            column![self.toggle_controls(backend), select_mic(backend),].spacing(SPACING),
+        )
+        .padding(PADDING);
 
         let footer = row![
             self.hotkey_indicator(),
@@ -343,7 +409,7 @@ impl App {
             .into()
     }
 
-    fn toggle_active(&self, backend: &Backend) -> Element<'_, Msg> {
+    fn toggle_controls(&self, backend: &Backend) -> Element<'_, Msg> {
         if get_selected_mic(backend).is_none() {
             return row![
                 text("Select a microphone to enable push-to-talk")
@@ -413,16 +479,12 @@ impl App {
             )
             .into()
         } else {
-            let trigger_label = hk_label(
-                "Trigger",
-                &self.hk_descriptions.trigger,
-                Some(HotKeyRecording::Trigger),
-            );
-            let toggle_active_label = hk_label(
-                "Enable/Disable",
-                &self.hk_descriptions.toggle_active,
-                Some(HotKeyRecording::ToggleActive),
-            );
+            let d = &self.hk_descriptions;
+            use HotKeyAction as HKR;
+
+            let trigger_label = hk_label("Trigger", &d.trigger, Some(HKR::Trigger));
+            let toggle_active_label =
+                hk_label("Enable/Disable", &d.toggle_active, Some(HKR::ToggleActive));
 
             let all = row![trigger_label, toggle_active_label]
                 .spacing(SPACING)
@@ -513,7 +575,7 @@ fn weak_text_style(theme: &Theme) -> text::Style {
 fn hk_label<'a>(
     name: &'a str,
     description: &'a str,
-    recording: Option<HotKeyRecording>,
+    recording: Option<HotKeyAction>,
 ) -> Element<'a, Msg> {
     let italic = Font {
         style: Style::Italic,
